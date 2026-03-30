@@ -24,13 +24,40 @@ namespace GIAViewer.Components
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
             pManager.AddGenericParameter("Items", "I", "Bim Mesh + Bim Instance objects", GH_ParamAccess.tree);
-            pManager.AddTextParameter("ApiBase", "A", "Deployed site root (e.g. https://….vercel.app)", GH_ParamAccess.item, "");
-            pManager.AddTextParameter("ViewerBase", "V", "Viewer URL (often same as ApiBase)", GH_ParamAccess.item, "");
-            pManager.AddBooleanParameter("Publish", "P", "Trigger upload", GH_ParamAccess.item, false);
+            pManager.AddTextParameter(
+                "ApiBase",
+                "A",
+                "Site root, e.g. https://gia-viewer.vercel.app (https added if missing)",
+                GH_ParamAccess.item,
+                "");
+            pManager.AddTextParameter(
+                "ViewerBase",
+                "V",
+                "Usually same as ApiBase (shareable link uses this host)",
+                GH_ParamAccess.item,
+                "");
+            pManager.AddBooleanParameter(
+                "Publish",
+                "P",
+                "Must be True to upload and get ViewerUrl (U output)",
+                GH_ParamAccess.item,
+                false);
             pManager.AddTextParameter(
                 "LocalGlb",
                 "L",
                 "Full path to a .glb file (e.g. ~/Downloads/model.glb), not a folder. Leave empty to skip.",
+                GH_ParamAccess.item,
+                "");
+            pManager.AddTextParameter(
+                "StableKey",
+                "K",
+                "Same key = overwrite same file + stable ?m= link (a-z 0-9 _ -). Empty = random id each time.",
+                GH_ParamAccess.item,
+                "");
+            pManager.AddTextParameter(
+                "UploadSecret",
+                "X",
+                "Optional; must match Vercel GIA_UPLOAD_SECRET if you set it.",
                 GH_ParamAccess.item,
                 "");
         }
@@ -48,6 +75,9 @@ namespace GIAViewer.Components
             if (param?.VolatileData == null)
             {
                 AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, "No items.");
+                da.SetData(0, "");
+                da.SetData(1, "Idle");
+                da.SetData(2, "Connect Bim Mesh / Bim Instance to Items.");
                 return;
             }
 
@@ -96,10 +126,17 @@ namespace GIAViewer.Components
             var viewerBase = "";
             var publish = false;
             var localPath = "";
+            var stableKey = "";
+            var uploadSecret = "";
             da.GetData(1, ref apiBase);
             da.GetData(2, ref viewerBase);
             da.GetData(3, ref publish);
             da.GetData(4, ref localPath);
+            da.GetData(5, ref stableKey);
+            da.GetData(6, ref uploadSecret);
+
+            apiBase = NormalizeBaseUrl(apiBase);
+            viewerBase = NormalizeBaseUrl(viewerBase);
 
             var tempGlb = Path.Combine(Path.GetTempPath(), $"gia_{Guid.NewGuid():N}.glb");
             try
@@ -157,7 +194,12 @@ namespace GIAViewer.Components
                 return;
             }
 
-            var (url, status, detail) = UploadClient.Publish(tempGlb, apiBase, viewerBase);
+            var (url, status, detail) = UploadClient.Publish(
+                tempGlb,
+                apiBase,
+                viewerBase,
+                stableKey,
+                uploadSecret);
             da.SetData(0, url ?? "");
             da.SetData(1, status);
             da.SetData(2, detail);
@@ -165,6 +207,11 @@ namespace GIAViewer.Components
             if (status == "OK" && !string.IsNullOrEmpty(url))
             {
                 TryCopyLink(url);
+                AddRuntimeMessage(GH_RuntimeMessageLevel.Remark, "Link on output U (and clipboard if allowed).");
+            }
+            else
+            {
+                AddRuntimeMessage(GH_RuntimeMessageLevel.Error, detail ?? status ?? "Upload failed.");
             }
 
             try
@@ -181,6 +228,17 @@ namespace GIAViewer.Components
         /// If the user passes a directory (or a path ending in /), append a file name.
         /// File.Copy requires a file path; passing a folder causes "access denied" on macOS.
         /// </summary>
+        private static string NormalizeBaseUrl(string s)
+        {
+            if (string.IsNullOrWhiteSpace(s))
+                return "";
+            s = s.Trim().TrimEnd('/');
+            if (!s.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                && !s.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                s = "https://" + s;
+            return s;
+        }
+
         private static string ResolveLocalGlbPath(string input)
         {
             if (string.IsNullOrWhiteSpace(input))

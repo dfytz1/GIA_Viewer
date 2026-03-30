@@ -41,6 +41,10 @@ Bump the `Grasshopper` package version in `GIAViewer.csproj` when you want to ta
 - **Bim Instance** — `MeshId` + plane (repeat placements; same id shares one mesh in GLB).
 - **Publish Model** — tree of mesh + instance items; optional local GLB path; with **Publish** true, calls your **ApiBase** `/api/upload`, then `PUT`s the file and outputs a **ViewerUrl** (also copied to the clipboard when Eto allows).
 
+**Stable client link:** set **StableKey** (e.g. `main-facade`) to always upload to the same object `main-facade.glb`. The **ViewerUrl** stays `…?m=main-facade` on every publish; R2 overwrites the file so clients refresh to see updates.
+
+**Optional `GIA_UPLOAD_SECRET`:** set this in Vercel; then set **UploadSecret** on the component to the same value. Otherwise anyone who can call `/api/upload` could overwrite a known stable key.
+
 ## End-to-end
 
 1. Deploy the `viewer` app and configure R2 + env vars.

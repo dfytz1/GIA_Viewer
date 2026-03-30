@@ -5,7 +5,8 @@ import { randomUUID } from "crypto";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  "Access-Control-Allow-Headers":
+    "Content-Type, Authorization, X-GIA-Upload-Secret",
   "Access-Control-Max-Age": "86400",
 };
 
@@ -31,6 +32,22 @@ function getClient() {
   };
 }
 
+/** Safe object name stem for ?m=… (no .glb). */
+function sanitizeStableKey(raw) {
+  if (raw == null || typeof raw !== "string") return null;
+  const t = raw.trim().replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 96);
+  return t.length > 0 ? t : null;
+}
+
+function readRequestBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", reject);
+  });
+}
+
 export default async function handler(req, res) {
   Object.entries(corsHeaders).forEach(([k, v]) => res.setHeader(k, v));
 
@@ -47,10 +64,40 @@ export default async function handler(req, res) {
     return;
   }
 
+  const expectedSecret = process.env.GIA_UPLOAD_SECRET?.trim();
+  if (expectedSecret) {
+    const sent = req.headers["x-gia-upload-secret"];
+    if (sent !== expectedSecret) {
+      res.statusCode = 401;
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify({
+          error:
+            "Unauthorized: set Vercel GIA_UPLOAD_SECRET and send the same value in header X-GIA-Upload-Secret from Grasshopper.",
+        })
+      );
+      return;
+    }
+  }
+
   try {
+    let requestedKey = null;
+    try {
+      const raw = await readRequestBody(req);
+      if (raw) {
+        const j = JSON.parse(raw);
+        if (j && typeof j.key === "string") {
+          requestedKey = sanitizeStableKey(j.key);
+        }
+      }
+    } catch {
+      /* empty or invalid JSON → new UUID */
+    }
+
+    const modelId = requestedKey || randomUUID();
+    const key = `${modelId}.glb`;
+
     const { client, bucket } = getClient();
-    const modelUuid = randomUUID();
-    const key = `${modelUuid}.glb`;
 
     const command = new PutObjectCommand({
       Bucket: bucket,
@@ -71,9 +118,11 @@ export default async function handler(req, res) {
     res.end(
       JSON.stringify({
         presignedUrl,
-        modelUuid,
+        modelId,
+        modelUuid: modelId,
         publicUrl,
         key,
+        overwrite: Boolean(requestedKey),
       })
     );
   } catch (e) {

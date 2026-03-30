@@ -153,8 +153,9 @@ export function mountUi({ modelId, modelBase, viewer }) {
 
   if (modelId && modelBase) {
     showLoading(true);
+    const objectUrl = `${modelBase}/${encodeURIComponent(modelId)}.glb`;
     viewer
-      .loadFromUrl(`${modelBase}/${modelId}.glb`)
+      .loadFromUrl(objectUrl)
       .then(() => window.dispatchEvent(new Event("gia-model-loaded")))
       .catch((e) => showToast(String(e.message || e)))
       .finally(() => showLoading(false));
