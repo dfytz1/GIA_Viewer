@@ -19,7 +19,12 @@ namespace GIAViewer.Components
 
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
-            pManager.AddColourParameter("Color", "C", "RGBA color", GH_ParamAccess.item, Color.LightGray);
+            pManager.AddColourParameter(
+                "Color",
+                "C",
+                "RGBA; non-opaque alpha exports as blended PBR in GLB",
+                GH_ParamAccess.item,
+                Color.LightGray);
             pManager.AddNumberParameter("Metallic", "M", "0–1", GH_ParamAccess.item, 0.0);
             pManager.AddNumberParameter("Roughness", "R", "0–1", GH_ParamAccess.item, 0.5);
             pManager.AddTextParameter("Name", "N", "Material name", GH_ParamAccess.item, "Material");

@@ -8,41 +8,43 @@ using Rhino.Geometry;
 
 namespace GIAViewer.Components
 {
-    public class BimMeshComponent : GH_Component
+    public class BimCurveComponent : GH_Component
     {
-        public BimMeshComponent()
-            : base("Bim Mesh", "BimMesh", "Register a mesh template with material and id for instancing.", "GIA Viewer", "Data")
+        public BimCurveComponent()
+            : base("Bim Curve", "BimCrv", "Mesh a curve (planar cap or pipe) as GiaMeshDefinition for Publish.", "GIA Viewer", "Data")
         {
         }
 
-        public override Guid ComponentGuid => new Guid("c2d3e4f5-a6b7-4890-b123-456789abcdef");
+        public override Guid ComponentGuid => new Guid("a9b8c7d6-e5f4-4321-8765-432109876543");
 
         protected override Bitmap Icon => null;
 
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
-            pManager.AddMeshParameter("Mesh", "M", "Triangulated mesh", GH_ParamAccess.item);
+            pManager.AddCurveParameter("Curve", "C", "Closed planar → cap; open/non-planar → pipe", GH_ParamAccess.item);
             pManager.AddGenericParameter("Material", "Mat", "From Bim Material", GH_ParamAccess.item);
             pManager.AddTextParameter(
                 "MeshId",
                 "Id",
-                "Optional; empty = auto id (stable per component + branch). Wire Id out to Bim Instance Ref.",
+                "Optional; empty = auto id. Wire Id out to Bim Instance Ref.",
                 GH_ParamAccess.item,
                 "");
+            pManager.AddNumberParameter("PipeRadius", "R", "Radius when meshed as pipe", GH_ParamAccess.item, 0.05);
+            pManager.AddIntegerParameter("Segments", "S", "Pipe / mesh density", GH_ParamAccess.item, 16);
         }
 
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
         {
-            pManager.AddGenericParameter("Item", "I", "Feed into Publish Model", GH_ParamAccess.item);
+            pManager.AddGenericParameter("Item", "I", "GiaMeshDefinition for Publish / Placed Mesh", GH_ParamAccess.item);
             pManager.AddTextParameter("MeshId", "Id", "Resolved id (for Bim Instance Ref)", GH_ParamAccess.item);
         }
 
         protected override void SolveInstance(IGH_DataAccess da)
         {
-            Mesh mesh = null;
-            if (!da.GetData(0, ref mesh) || mesh == null || !mesh.IsValid)
+            Curve crv = null;
+            if (!da.GetData(0, ref crv) || crv == null || !crv.IsValid)
             {
-                AddRuntimeMessage(GH_RuntimeMessageLevel.Error, "Invalid mesh.");
+                AddRuntimeMessage(GH_RuntimeMessageLevel.Error, "Valid curve required.");
                 return;
             }
 
@@ -62,16 +64,25 @@ namespace GIAViewer.Components
 
             var id = "";
             da.GetData(2, ref id);
-            id = GiaMeshId.ResolveDefinitionId(this, da, id, "m");
+            id = GiaMeshId.ResolveDefinitionId(this, da, id, "c");
 
-            var dup = mesh.DuplicateMesh();
-            dup.Normals.ComputeNormals();
-            dup.FaceNormals.ComputeFaceNormals();
+            var radius = 0.05;
+            da.GetData(3, ref radius);
+
+            var segments = 16;
+            da.GetData(4, ref segments);
+
+            var mesh = CurveMesher.MeshFromCurve(crv, radius, segments);
+            if (mesh == null || !mesh.IsValid)
+            {
+                AddRuntimeMessage(GH_RuntimeMessageLevel.Error, "Could not mesh curve (try adjusting radius or segments).");
+                return;
+            }
 
             var def = new GiaMeshDefinition
             {
                 MeshId = id,
-                RhinoMesh = dup,
+                RhinoMesh = mesh,
                 Material = mat,
             };
 

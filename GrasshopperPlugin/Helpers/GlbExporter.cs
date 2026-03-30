@@ -16,14 +16,18 @@ namespace GIAViewer.Helpers
         public static void Export(
             string path,
             Dictionary<string, GiaMeshDefinition> meshById,
-            IReadOnlyList<GiaMeshInstance> instances)
+            IReadOnlyList<(string meshId, Matrix4x4 matrix)> placements)
         {
             if (meshById.Count == 0)
                 throw new InvalidOperationException("No mesh definitions to export.");
+            if (placements == null || placements.Count == 0)
+                throw new InvalidOperationException("No placements.");
 
             var scene = new SceneBuilder();
 
-            var meshBuilders = new Dictionary<string, MeshBuilder<VertexPositionNormal, VertexEmpty, VertexEmpty>>();
+            var meshBuilders =
+                new Dictionary<string, MeshBuilder<VertexPositionNormal, VertexEmpty, VertexEmpty>>(
+                    StringComparer.OrdinalIgnoreCase);
             foreach (var kv in meshById)
             {
                 var def = kv.Value;
@@ -39,32 +43,19 @@ namespace GIAViewer.Helpers
                     .WithBaseColor(rgba)
                     .WithMetallicRoughness(metallic, roughness);
 
+                if (rgba.W < 0.999f)
+                    material.AlphaMode = AlphaMode.BLEND;
+
                 var prim = mb.UsePrimitive(material);
                 AddRhinoMesh(prim, def.RhinoMesh);
                 meshBuilders[kv.Key] = mb;
             }
 
-            var instById = instances
-                .Where(i => meshBuilders.ContainsKey(i.MeshId))
-                .GroupBy(i => i.MeshId)
-                .ToDictionary(g => g.Key, g => g.ToList());
-
-            foreach (var kv in meshBuilders)
+            foreach (var (meshId, matrix) in placements)
             {
-                var id = kv.Key;
-                var mb = kv.Value;
-                if (instById.TryGetValue(id, out var list) && list.Count > 0)
-                {
-                    foreach (var ins in list)
-                    {
-                        var m = PlaneToMatrix(ins.Plane);
-                        scene.AddRigidMesh(mb, m);
-                    }
-                }
-                else
-                {
-                    scene.AddRigidMesh(mb, Matrix4x4.Identity);
-                }
+                if (!meshBuilders.TryGetValue(meshId, out var mb))
+                    continue;
+                scene.AddRigidMesh(mb, matrix);
             }
 
             var model = scene.ToGltf2();
@@ -81,16 +72,6 @@ namespace GIAViewer.Helpers
         private static Vector4 ToRgba(System.Drawing.Color c)
         {
             return new Vector4(c.R / 255f, c.G / 255f, c.B / 255f, c.A / 255f);
-        }
-
-        private static Matrix4x4 PlaneToMatrix(Rhino.Geometry.Plane plane)
-        {
-            var xf = Transform.PlaneToPlane(Rhino.Geometry.Plane.WorldXY, plane);
-            return new Matrix4x4(
-                (float)xf.M00, (float)xf.M01, (float)xf.M02, (float)xf.M03,
-                (float)xf.M10, (float)xf.M11, (float)xf.M12, (float)xf.M13,
-                (float)xf.M20, (float)xf.M21, (float)xf.M22, (float)xf.M23,
-                (float)xf.M30, (float)xf.M31, (float)xf.M32, (float)xf.M33);
         }
 
         private static void AddRhinoMesh(

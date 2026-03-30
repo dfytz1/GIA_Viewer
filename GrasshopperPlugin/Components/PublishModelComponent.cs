@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Numerics;
 using System.IO;
 using Eto.Forms;
 using GIAViewer.Helpers;
@@ -23,7 +24,11 @@ namespace GIAViewer.Components
 
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
-            pManager.AddGenericParameter("Items", "I", "Bim Mesh + Bim Instance objects", GH_ParamAccess.tree);
+            pManager.AddGenericParameter(
+                "Items",
+                "I",
+                "Bim Mesh, Bim Placed Mesh, Bim Curve, Bim Instance (same tree)",
+                GH_ParamAccess.tree);
             pManager.AddTextParameter(
                 "ApiBase",
                 "A",
@@ -110,15 +115,15 @@ namespace GIAViewer.Components
             }
 
             var meshById = new Dictionary<string, GiaMeshDefinition>(StringComparer.OrdinalIgnoreCase);
-            var instances = new List<GiaMeshInstance>();
-            GiaObjectHelper.CollectFromTree(flat, meshById, instances);
+            var placements = new List<(string meshId, Matrix4x4 matrix)>();
+            GiaExportCollector.Collect(flat, meshById, placements, w => AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, w));
 
             if (meshById.Count == 0)
             {
-                AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, "No Bim Mesh definitions.");
+                AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, "No mesh definitions.");
                 da.SetData(0, "");
                 da.SetData(1, "Idle");
-                da.SetData(2, "Add at least one Bim Mesh.");
+                da.SetData(2, "Add Bim Mesh, Bim Placed Mesh, or Bim Curve (Bim Instance alone is not enough).");
                 return;
             }
 
@@ -141,7 +146,7 @@ namespace GIAViewer.Components
             var tempGlb = Path.Combine(Path.GetTempPath(), $"gia_{Guid.NewGuid():N}.glb");
             try
             {
-                GlbExporter.Export(tempGlb, meshById, instances);
+                GlbExporter.Export(tempGlb, meshById, placements);
             }
             catch (Exception ex)
             {

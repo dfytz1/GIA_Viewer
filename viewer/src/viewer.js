@@ -44,6 +44,12 @@ export class GiaViewer {
     this.controls.screenSpacePanning = true;
     this.controls.minDistance = 0.1;
     this.controls.maxDistance = 1e6;
+    this.controls.enableDblClickZoom = false;
+
+    this.raycaster = new THREE.Raycaster();
+    this._ndc = new THREE.Vector2();
+    this._selectedMesh = null;
+    this._bindPickHandlers();
 
     const pmrem = new THREE.PMREMGenerator(this.renderer);
     const env = new RoomEnvironment(this.renderer);
@@ -213,6 +219,109 @@ export class GiaViewer {
     return { min, max };
   }
 
+  _bindPickHandlers() {
+    const el = this.renderer.domElement;
+    el.style.cursor = "default";
+
+    el.addEventListener("click", (e) => {
+      if (e.button !== 0) return;
+      if (e.detail !== 1) return;
+      const mesh = this._pickMesh(e.clientX, e.clientY);
+      if (mesh) this._setSelectedMesh(mesh);
+      else this._clearSelectionHighlight();
+    });
+
+    el.addEventListener("dblclick", (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      const mesh = this._pickMesh(e.clientX, e.clientY);
+      if (!mesh) return;
+      this._setSelectedMesh(mesh);
+      this._focusOnMesh(mesh);
+    });
+  }
+
+  _pickMesh(clientX, clientY) {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    this._ndc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+    this._ndc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+    this.raycaster.setFromCamera(this._ndc, this.camera);
+    const hits = this.raycaster.intersectObject(this.modelRoot, true);
+    for (let i = 0; i < hits.length; i++) {
+      const o = hits[i].object;
+      if (o.isMesh && o.visible) return o;
+    }
+    return null;
+  }
+
+  _collectMaterials(mesh) {
+    const m = mesh.material;
+    if (!m) return [];
+    return Array.isArray(m) ? m : [m];
+  }
+
+  _clearSelectionHighlight() {
+    if (!this._selectedMesh) return;
+    const mats = this._collectMaterials(this._selectedMesh);
+    mats.forEach((mat) => {
+      if (!mat || !mat.userData.giaSelectionActive) return;
+      if (mat.userData.giaPrevEmissive)
+        mat.emissive.copy(mat.userData.giaPrevEmissive);
+      if (mat.userData.giaPrevEmissiveIntensity != null)
+        mat.emissiveIntensity = mat.userData.giaPrevEmissiveIntensity;
+      delete mat.userData.giaPrevEmissive;
+      delete mat.userData.giaPrevEmissiveIntensity;
+      delete mat.userData.giaSelectionActive;
+    });
+    this._selectedMesh = null;
+  }
+
+  _setSelectedMesh(mesh) {
+    this._clearSelectionHighlight();
+    if (!mesh) return;
+    this._selectedMesh = mesh;
+    const mats = this._collectMaterials(mesh);
+    mats.forEach((mat) => {
+      if (!mat || mat.emissive == null) return;
+      if (mat.userData.giaSelectionActive) return;
+      mat.userData.giaPrevEmissive = mat.emissive.clone();
+      mat.userData.giaPrevEmissiveIntensity = mat.emissiveIntensity;
+      mat.emissive.setHex(0x3355aa);
+      mat.emissiveIntensity = 0.42;
+      mat.userData.giaSelectionActive = true;
+    });
+  }
+
+  _focusOnMesh(mesh) {
+    const box = new THREE.Box3().setFromObject(mesh);
+    if (box.isEmpty()) return;
+
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z, 0.001);
+    const dist = maxDim / (2 * Math.tan((this.camera.fov * Math.PI) / 360));
+    const offset = dist * 1.28;
+
+    this.controls.target.copy(center);
+
+    const prev = new THREE.Vector3().subVectors(
+      this.camera.position,
+      this.controls.target,
+    );
+    let dir = prev.lengthSq() > 1e-10 ? prev.normalize() : null;
+    if (!dir) dir = new THREE.Vector3(1, 0.65, 1).normalize();
+
+    this.camera.position.copy(center.clone().add(dir.multiplyScalar(offset)));
+    this.camera.near = Math.max(0.001, maxDim / 2000);
+    this.camera.far = Math.max(10000, maxDim * 50);
+    this.camera.updateProjectionMatrix();
+
+    this.sun.position.copy(center.clone().add(new THREE.Vector3(40, 80, 30)));
+    this.sun.target.position.copy(center);
+
+    this.controls.update();
+  }
+
   _fitCameraToObject(object) {
     const box = new THREE.Box3().setFromObject(object);
     if (box.isEmpty()) return;
@@ -241,6 +350,7 @@ export class GiaViewer {
 
   loadFromUrl(url) {
     return new Promise((resolve, reject) => {
+      this._clearSelectionHighlight();
       while (this.modelRoot.children.length)
         this.modelRoot.remove(this.modelRoot.children[0]);
 
@@ -252,10 +362,14 @@ export class GiaViewer {
           root.updateMatrixWorld(true);
 
           root.traverse((c) => {
-            if (c.isMesh) {
-              c.castShadow = true;
-              c.receiveShadow = true;
-            }
+            if (!c.isMesh) return;
+            c.castShadow = true;
+            c.receiveShadow = true;
+            const mats = Array.isArray(c.material) ? c.material : [c.material];
+            mats.forEach((m) => {
+              if (!m) return;
+              if (m.transparent) m.depthWrite = false;
+            });
           });
 
           this.modelRoot.add(root);
