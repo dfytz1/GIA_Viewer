@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    References: McNeel “Using NuGet” — Grasshopper package pulls matching RhinoCommon + GH_IO.
+    https://developer.rhino3d.com/guides/rhinocommon/using-nuget/
+    Exclude runtime assets so the build does not depend on a local Rhino install; you still need
+    Rhino 8 + Grasshopper to load and debug the .gha.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net7.0</TargetFramework>
+    <RootNamespace>GIAViewer</RootNamespace>
+    <AssemblyName>GIAViewer</AssemblyName>
+    <OutputType>Library</OutputType>
+    <TargetExt>.gha</TargetExt>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <UseWindowsForms>false</UseWindowsForms>
+    <UseWpf>false</UseWpf>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Grasshopper" Version="8.29.26063.11001" ExcludeAssets="runtime" />
+    <PackageReference Include="SharpGLTF.Toolkit" Version="1.0.5" />
+  </ItemGroup>
+</Project>

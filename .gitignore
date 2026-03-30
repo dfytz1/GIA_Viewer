@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+viewer/.env
+viewer/.env.*
+!viewer/.env.example
+*.user
+*.suo
+bin/
+obj/
+*.gha
+.DS_Store
+
+# Local test exports from Grasshopper
+gia_export_*.glb
