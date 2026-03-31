@@ -33,9 +33,9 @@ export class GiaViewer {
     container.appendChild(this.renderer.domElement);
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x0a0b0d);
+    this._cornerScratch = new THREE.Vector3();
 
-    this.camera = new THREE.PerspectiveCamera(45, w / h, 0.01, 1e7);
+    this.camera = new THREE.PerspectiveCamera(45, w / h, 0.02, 1e7);
     this.camera.position.set(12, 8, 12);
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -45,6 +45,7 @@ export class GiaViewer {
     this.controls.minDistance = 0.1;
     this.controls.maxDistance = 1e6;
     this.controls.enableDblClickZoom = false;
+    this.controls.addEventListener("change", () => this._syncCameraFrustum());
 
     this.raycaster = new THREE.Raycaster();
     this._ndc = new THREE.Vector2();
@@ -72,14 +73,15 @@ export class GiaViewer {
     this.scene.add(this.sun);
     this.scene.add(this.sun.target);
 
-    const fill = new THREE.HemisphereLight(0x8fa3c4, 0x1a1c22, 0.45);
+    const fill = new THREE.HemisphereLight(0xffffff, 0xb8c0d0, 0.55);
     this.scene.add(fill);
 
-    this.grid = new THREE.GridHelper(200, 40, 0x2a3140, 0x1a1e28);
+    this.grid = new THREE.GridHelper(200, 40, 0x8899aa, 0xb8c4d0);
     this.grid.position.y = 0;
     this.grid.material.opacity = 0.35;
     this.grid.material.transparent = true;
     this.scene.add(this.grid);
+    this.setBackgroundColor("#e8eaf0");
 
     this.modelRoot = new THREE.Group();
     this.modelRoot.name = "ModelRoot";
@@ -133,6 +135,78 @@ export class GiaViewer {
 
   setGridVisible(v) {
     this.grid.visible = v;
+  }
+
+  getBackgroundColorHex() {
+    const c = this.scene.background;
+    return c && c.isColor ? `#${c.getHexString()}` : "#e8eaf0";
+  }
+
+  /**
+   * @param {string} cssHex e.g. "#e8eaf0" or "e8eaf0"
+   */
+  setBackgroundColor(cssHex) {
+    let s = String(cssHex || "").trim();
+    if (!s) s = "#e8eaf0";
+    if (!s.startsWith("#")) s = `#${s}`;
+    const col = new THREE.Color();
+    try {
+      col.setStyle(s);
+    } catch {
+      col.setHex(0xe8eaf0);
+      s = "#e8eaf0";
+    }
+    this.scene.background = col;
+    document.body.style.background = s;
+    const lum = col.r * 0.299 + col.g * 0.587 + col.b * 0.114;
+    const dark = lum < 0.35;
+    if (this.grid?.material) {
+      const mats = Array.isArray(this.grid.material)
+        ? this.grid.material
+        : [this.grid.material];
+      if (dark) {
+        mats[0]?.color?.setHex(0x2a3140);
+        mats[1]?.color?.setHex(0x1a1e28);
+      } else {
+        mats[0]?.color?.setHex(0x8899aa);
+        mats[1]?.color?.setHex(0xb8c4d0);
+      }
+    }
+  }
+
+  /** Keep near/far valid for the full model after zoom-to-detail (do not use focused mesh only). */
+  _syncCameraFrustum() {
+    if (this._bounds.isEmpty()) {
+      this.camera.near = 0.01;
+      this.camera.far = 1e7;
+      this.camera.updateProjectionMatrix();
+      return;
+    }
+    const { min, max } = this._bounds;
+    const corners = [
+      [min.x, min.y, min.z],
+      [max.x, min.y, min.z],
+      [min.x, max.y, min.z],
+      [max.x, max.y, min.z],
+      [min.x, min.y, max.z],
+      [max.x, min.y, max.z],
+      [min.x, max.y, max.z],
+      [max.x, max.y, max.z],
+    ];
+    const cp = this.camera.position;
+    const t = this.controls.target;
+    let maxDist = cp.distanceTo(t);
+    const v = this._cornerScratch;
+    for (let i = 0; i < corners.length; i++) {
+      const c = corners[i];
+      v.set(c[0], c[1], c[2]);
+      maxDist = Math.max(maxDist, cp.distanceTo(v));
+    }
+    maxDist = Math.max(maxDist, 1);
+    // Fixed small near: scaling near with scene size caused clipping when zoomed in on detail then pulling back.
+    this.camera.near = 0.02;
+    this.camera.far = Math.max(maxDist * 2.75, 5e4, 1e7);
+    this.camera.updateProjectionMatrix();
   }
 
   _onResize() {
@@ -261,17 +335,28 @@ export class GiaViewer {
   }
 
   _clearSelectionHighlight() {
+    if (this._selectedMesh?.userData?.giaSelectionEdges) {
+      const line = this._selectedMesh.userData.giaSelectionEdges;
+      line.parent?.remove(line);
+      line.geometry?.dispose();
+      line.material?.dispose();
+      delete this._selectedMesh.userData.giaSelectionEdges;
+    }
     if (!this._selectedMesh) return;
     const mats = this._collectMaterials(this._selectedMesh);
     mats.forEach((mat) => {
       if (!mat || !mat.userData.giaSelectionActive) return;
       if (mat.userData.giaPrevEmissive)
         mat.emissive.copy(mat.userData.giaPrevEmissive);
+      else mat.emissive?.setHex(0x000000);
       if (mat.userData.giaPrevEmissiveIntensity != null)
         mat.emissiveIntensity = mat.userData.giaPrevEmissiveIntensity;
+      if (mat.userData.giaPrevColor) mat.color.copy(mat.userData.giaPrevColor);
       delete mat.userData.giaPrevEmissive;
       delete mat.userData.giaPrevEmissiveIntensity;
+      delete mat.userData.giaPrevColor;
       delete mat.userData.giaSelectionActive;
+      delete mat.userData.giaSelectionColorMode;
     });
     this._selectedMesh = null;
   }
@@ -280,15 +365,43 @@ export class GiaViewer {
     this._clearSelectionHighlight();
     if (!mesh) return;
     this._selectedMesh = mesh;
+    mesh.updateWorldMatrix(true, true);
+
+    try {
+      const edges = new THREE.EdgesGeometry(mesh.geometry, 35);
+      const line = new THREE.LineSegments(
+        edges,
+        new THREE.LineBasicMaterial({
+          color: 0xff8800,
+          depthTest: true,
+          transparent: true,
+          opacity: 0.95,
+        }),
+      );
+      line.name = "gia-selection-outline";
+      line.raycast = () => {};
+      line.renderOrder = 1;
+      mesh.add(line);
+      mesh.userData.giaSelectionEdges = line;
+    } catch {
+      /* non-geometry mesh etc. */
+    }
+
     const mats = this._collectMaterials(mesh);
     mats.forEach((mat) => {
-      if (!mat || mat.emissive == null) return;
-      if (mat.userData.giaSelectionActive) return;
-      mat.userData.giaPrevEmissive = mat.emissive.clone();
-      mat.userData.giaPrevEmissiveIntensity = mat.emissiveIntensity;
-      mat.emissive.setHex(0x3355aa);
-      mat.emissiveIntensity = 0.42;
-      mat.userData.giaSelectionActive = true;
+      if (!mat || mat.userData.giaSelectionActive) return;
+      if (mat.emissive != null) {
+        mat.userData.giaPrevEmissive = mat.emissive.clone();
+        mat.userData.giaPrevEmissiveIntensity = mat.emissiveIntensity;
+        mat.emissive.setHex(0xffaa44);
+        mat.emissiveIntensity = Math.max(mat.emissiveIntensity ?? 1, 0.15) * 2.2;
+        mat.userData.giaSelectionActive = true;
+      } else if (mat.color != null) {
+        mat.userData.giaPrevColor = mat.color.clone();
+        mat.color.lerp(new THREE.Color(0xffaa44), 0.35);
+        mat.userData.giaSelectionActive = true;
+        mat.userData.giaSelectionColorMode = true;
+      }
     });
   }
 
@@ -312,14 +425,12 @@ export class GiaViewer {
     if (!dir) dir = new THREE.Vector3(1, 0.65, 1).normalize();
 
     this.camera.position.copy(center.clone().add(dir.multiplyScalar(offset)));
-    this.camera.near = Math.max(0.001, maxDim / 2000);
-    this.camera.far = Math.max(10000, maxDim * 50);
-    this.camera.updateProjectionMatrix();
 
     this.sun.position.copy(center.clone().add(new THREE.Vector3(40, 80, 30)));
     this.sun.target.position.copy(center);
 
     this.controls.update();
+    this._syncCameraFrustum();
   }
 
   _fitCameraToObject(object) {
@@ -334,9 +445,6 @@ export class GiaViewer {
     const offset = dist * 1.35;
 
     this.controls.target.copy(center);
-    this.camera.near = Math.max(0.001, maxDim / 2000);
-    this.camera.far = Math.max(10000, maxDim * 50);
-    this.camera.updateProjectionMatrix();
 
     const dir = new THREE.Vector3(1, 0.65, 1).normalize();
     this.camera.position.copy(center.clone().add(dir.multiplyScalar(offset)));
@@ -345,6 +453,7 @@ export class GiaViewer {
     this.sun.target.position.copy(center);
 
     this.controls.update();
+    this._syncCameraFrustum();
     this.initSectionSlidersFromBounds();
   }
 

@@ -12,4 +12,9 @@ canvasWrap.id = "canvas-wrap";
 document.getElementById("app").appendChild(canvasWrap);
 
 const viewer = new GiaViewer(canvasWrap);
+const bgParam = params.get("bg");
+const storedBg = localStorage.getItem("gia-bg");
+if (bgParam) viewer.setBackgroundColor(bgParam);
+else if (storedBg) viewer.setBackgroundColor(storedBg);
+
 mountUi({ modelId, modelBase, viewer });

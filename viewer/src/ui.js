@@ -19,6 +19,10 @@ export function mountUi({ modelId, modelBase, viewer }) {
         <input id="gia-grid" type="checkbox" class="accent-gia-accent" checked />
         <span>Grid</span>
       </label>
+      <label class="flex cursor-pointer items-center gap-2 rounded-lg border border-gia-border bg-gia-panel px-3 py-2 text-xs text-gia-muted backdrop-blur-md hover:border-white/20">
+        <span class="whitespace-nowrap">Background</span>
+        <input id="gia-bg-color" type="color" class="h-7 w-10 cursor-pointer rounded border border-gia-border bg-transparent p-0" title="Scene background" />
+      </label>
     </div>
   `;
   app.appendChild(top);
@@ -92,6 +96,18 @@ export function mountUi({ modelId, modelBase, viewer }) {
 
   const gridEl = top.querySelector("#gia-grid");
   gridEl.addEventListener("change", () => viewer.setGridVisible(gridEl.checked));
+
+  const bgColorEl = top.querySelector("#gia-bg-color");
+  bgColorEl.value = viewer.getBackgroundColorHex();
+  bgColorEl.addEventListener("input", () => {
+    const v = bgColorEl.value;
+    viewer.setBackgroundColor(v);
+    try {
+      localStorage.setItem("gia-bg", v);
+    } catch {
+      /* private mode */
+    }
+  });
 
   function wireSection(axis, onId, rangeId) {
     const on = panel.querySelector(onId);
