@@ -19,6 +19,8 @@ function maxScaleOnAxis(matrixWorld) {
  * @returns {number} Infinity if unusable (keeps full detail)
  */
 function projectedBoundingSphereDiameterPx(mesh, camera, viewportHeightPx) {
+  mesh.updateWorldMatrix(true, false);
+
   const geom = mesh.geometry;
   if (!geom) return Infinity;
   if (!geom.boundingSphere) geom.computeBoundingSphere();
@@ -54,18 +56,33 @@ function projectedBoundingSphereDiameterPx(mesh, camera, viewportHeightPx) {
  * @param {THREE.Object3D} root
  * @returns {{ detail: THREE.Mesh; hull: THREE.Mesh; pivot: THREE.Object3D }[]}
  */
+function isGiaDetailName(name) {
+  return typeof name === "string" && name.startsWith("gia_detail");
+}
+
+function isGiaHullName(name) {
+  return typeof name === "string" && name.startsWith("gia_hull");
+}
+
 export function collectGiaLodPairs(root) {
   /** @type {{ detail: THREE.Mesh; hull: THREE.Mesh; pivot: THREE.Object3D }[]} */
   const pairs = [];
   root.traverse((o) => {
-    if (o.name !== "gia_detail" || !o.isMesh) return;
-    const hull = o.parent?.getObjectByName("gia_hull");
+    if (!o.isMesh || !isGiaDetailName(o.name)) return;
+    const hull = o.parent?.children.find(
+      (c) => c.isMesh && isGiaHullName(c.name),
+    );
     if (hull?.isMesh && o.parent) {
       o.userData.giaLodDetail = true;
       hull.userData.giaLodHull = true;
       pairs.push({ detail: o, hull, pivot: o.parent });
       const g = o.geometry;
       if (g && !g.boundingSphere) g.computeBoundingSphere();
+    }
+  });
+  root.traverse((o) => {
+    if (o.isMesh && isGiaHullName(o.name) && !o.userData.giaLodHull) {
+      o.visible = false;
     }
   });
   for (const { detail, hull } of pairs) {
