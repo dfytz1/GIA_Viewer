@@ -15,7 +15,12 @@ const viewer = new Viewer({
   backgroundColor: [0.055, 0.062, 0.078],
   pbrEnabled: true,
   antialias: true,
+  // Viewer.js: enable for large scenes so Perspective.far can exceed default 10000 without clipping.
+  logarithmicDepthBufferEnabled: true,
 });
+
+viewer.scene.camera.perspective.near = 0.1;
+viewer.scene.camera.perspective.far = 1e7;
 
 const gltfLoader = new GLTFLoaderPlugin(viewer);
 

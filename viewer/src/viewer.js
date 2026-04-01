@@ -17,6 +17,15 @@ import { collectGiaLodPairs, updateGiaLodVisibility } from "./giaLod.js";
 const DRACO_DECODER =
   "https://www.gstatic.com/draco/versioned/decoders/1.5.6/";
 
+/** Matches @xeokit/xeokit-sdk `Perspective.js` defaults (fov 60, near 0.1, far 10000). Far still grows with scene bounds. */
+export const CAMERA_DEFAULTS = Object.freeze({
+  fov: 60,
+  near: 0.1,
+  far: 10000,
+  /** Minimum perspective near while a model is loaded (xeokit default near). */
+  nearFloor: 0.1,
+});
+
 /** Defaults and URL keys for lighting / tone / SSAO tuning (see ui panel + query string). */
 export const LOOK_DEFAULTS = Object.freeze({
   toneMappingExposure: 1.05,
@@ -76,7 +85,12 @@ export class GiaViewer {
     this._shadowSceneSize = new THREE.Vector3();
     this._instShadowBox = new THREE.Box3();
 
-    this.camera = new THREE.PerspectiveCamera(45, w / h, 0.02, 1e7);
+    this.camera = new THREE.PerspectiveCamera(
+      CAMERA_DEFAULTS.fov,
+      w / h,
+      CAMERA_DEFAULTS.near,
+      CAMERA_DEFAULTS.far,
+    );
     this.camera.position.set(12, 8, 12);
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -558,7 +572,7 @@ export class GiaViewer {
    */
   _syncCameraNearFromBounds() {
     if (this._bounds.isEmpty()) {
-      this.camera.near = 0.005;
+      this.camera.near = CAMERA_DEFAULTS.near;
       this.camera.updateProjectionMatrix();
       return;
     }
@@ -567,11 +581,12 @@ export class GiaViewer {
     const sy = max.y - min.y;
     const sz = max.z - min.z;
     const modelDiag = Math.sqrt(sx * sx + sy * sy + sz * sz);
+    const floor = CAMERA_DEFAULTS.nearFloor;
 
-    const nearFromModel = Math.max(0.005, modelDiag * 0.0001);
+    const nearFromModel = Math.max(floor, modelDiag * 0.0001);
 
     const distTarget = this.camera.position.distanceTo(this.controls.target);
-    const nearFromView = Math.max(0.005, distTarget * 0.002);
+    const nearFromView = Math.max(floor, distTarget * 0.002);
 
     this.camera.near = Math.min(nearFromModel, nearFromView);
     this.camera.updateProjectionMatrix();
@@ -584,8 +599,8 @@ export class GiaViewer {
    */
   _syncCameraFrustum() {
     if (this._bounds.isEmpty()) {
-      this.camera.near = 0.005;
-      this.camera.far = 1e5;
+      this.camera.near = CAMERA_DEFAULTS.near;
+      this.camera.far = CAMERA_DEFAULTS.far;
       this.camera.updateProjectionMatrix();
       return;
     }
