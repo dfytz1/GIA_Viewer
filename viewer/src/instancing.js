@@ -237,6 +237,7 @@ export async function mergeMeshesByMaterialBatch(root, options = {}) {
       }
 
       normalizeBatchMaterialIndex(merged);
+      merged.computeBoundingBox();
       merged.computeBoundingSphere();
 
       const mesh = new THREE.Mesh(merged, material);

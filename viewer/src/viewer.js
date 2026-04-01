@@ -1263,6 +1263,21 @@ export class GiaViewer {
               );
               this._tuneForHeavyScene(instStats);
               this._fitCameraToObject(this.modelRoot);
+              this.modelRoot.updateMatrixWorld(true);
+              const recomputedBox = new THREE.Box3().setFromObject(
+                this.modelRoot,
+              );
+              if (!recomputedBox.isEmpty()) {
+                this._bounds.copy(recomputedBox);
+                const sz = recomputedBox.getSize(new THREE.Vector3());
+                const d = Math.sqrt(
+                  sz.x * sz.x + sz.y * sz.y + sz.z * sz.z,
+                );
+                this._syncCameraFrustum();
+                this._tuneShadowMapResolutionForBounds(d);
+                this._updateSunShadowCameraFromBounds();
+                this.initSectionSlidersFromBounds();
+              }
               this._applyClippingToModel();
               resolve(gltf);
             } catch (e) {
