@@ -99,7 +99,7 @@ export function mountUi({ modelId, modelBase, viewer }) {
         <span class="whitespace-nowrap">Background</span>
         <input id="gia-bg-color" type="color" class="h-7 w-10 cursor-pointer rounded border border-gia-border bg-transparent p-0" title="Scene background" />
       </label>
-      <label class="flex cursor-pointer items-center gap-2 rounded-lg border border-gia-border bg-gia-panel px-3 py-2 text-xs text-gia-muted backdrop-blur-md hover:border-white/20" title="When the mesh’s on-screen diameter (bounding sphere) is below this many pixels, show convex hull. Empty = LOD off. 0 = hull only. Try ~80–200 for facades.">
+      <label class="flex cursor-pointer items-center gap-2 rounded-lg border border-gia-border bg-gia-panel px-3 py-2 text-xs text-gia-muted backdrop-blur-md hover:border-white/20" title="Only for GLBs with Grasshopper gia_detail + gia_hull. Empty = LOD off (full mesh at any distance). If set: when the detail mesh is smaller than this many pixels on screen, the convex hull is shown instead—can look like geometry “popping off” at distance. 0 = hull only. Add ?nolod=1 to a link to force LOD off.">
         <span class="whitespace-nowrap">LOD (px)</span>
         <input id="gia-lodpx" type="number" min="0" step="5" class="w-[4.75rem] rounded border border-gia-border bg-black/40 px-1.5 py-1 font-mono text-[11px] text-white focus:border-gia-accent focus:outline-none" />
       </label>

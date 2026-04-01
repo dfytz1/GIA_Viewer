@@ -1,3 +1,7 @@
+/**
+ * Optional Grasshopper GLB LOD: only active when the viewer’s LOD (px) / ?lodpx= is set (not default).
+ * Swaps gia_detail ↔ gia_hull by on-screen size, not streaming—there is no distance-based mesh loading.
+ */
 import * as THREE from "three";
 
 const _sphereCenter = new THREE.Vector3();

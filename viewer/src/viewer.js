@@ -42,7 +42,6 @@ export class GiaViewer {
       antialias: true,
       alpha: false,
       powerPreference: "high-performance",
-      logarithmicDepthBuffer: true,
     });
     this._targetPixelRatio = Math.min(window.devicePixelRatio, 2);
     this.renderer.setPixelRatio(this._targetPixelRatio);
@@ -707,11 +706,12 @@ export class GiaViewer {
     }
     const runSsao = this.useSsao && this._ssaoResumeFrames === 0;
 
+    // GIA hull/detail swap only while adaptive LOD is on (lod px > 0). `null` = off; `0` = hull-only (static).
     if (
       this._lodPairs.length > 0 &&
       this.lodDetailMinPx != null &&
       Number.isFinite(this.lodDetailMinPx) &&
-      this.lodDetailMinPx >= 0 &&
+      this.lodDetailMinPx > 0 &&
       (moved || this._needsRender)
     ) {
       updateGiaLodVisibility(

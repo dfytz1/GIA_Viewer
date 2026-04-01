@@ -22,8 +22,9 @@ const storedBg = localStorage.getItem("gia-bg");
 if (bgParam) viewer.setBackgroundColor(bgParam);
 else if (storedBg) viewer.setBackgroundColor(storedBg);
 
+// Optional screen-space LOD (gia_detail ↔ gia_hull). Empty = full detail always. `?nolod=1` ignores ?lodpx=.
 const lodpxParam = params.get("lodpx");
-if (lodpxParam != null && lodpxParam !== "") {
+if (params.get("nolod") !== "1" && lodpxParam != null && lodpxParam !== "") {
   const l = parseFloat(lodpxParam);
   if (Number.isFinite(l) && l >= 0) viewer.setLodDetailMinPx(l);
 }
