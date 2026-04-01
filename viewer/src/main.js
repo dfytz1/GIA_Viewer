@@ -22,10 +22,10 @@ const storedBg = localStorage.getItem("gia-bg");
 if (bgParam) viewer.setBackgroundColor(bgParam);
 else if (storedBg) viewer.setBackgroundColor(storedBg);
 
-const lodmParam = params.get("lodm");
-if (lodmParam != null && lodmParam !== "") {
-  const l = parseFloat(lodmParam);
-  if (Number.isFinite(l) && l >= 0) viewer.setLodDistanceMm(l);
+const lodpxParam = params.get("lodpx");
+if (lodpxParam != null && lodpxParam !== "") {
+  const l = parseFloat(lodpxParam);
+  if (Number.isFinite(l) && l >= 0) viewer.setLodDetailMinPx(l);
 }
 
 const cameraFromUrl = GiaViewer.parseCameraViewFromUrl(params);

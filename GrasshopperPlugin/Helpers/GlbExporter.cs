@@ -13,6 +13,10 @@ using SharpGLTF.Scenes;
 
 namespace GIAViewer.Helpers
 {
+    /// <summary>
+    /// Writes vertex positions in Rhino document units (no automatic conversion to glTF meters).
+    /// The viewer interprets scene distances in the same numeric space as the exported coordinates.
+    /// </summary>
     internal static class GlbExporter
     {
         public static void Export(

@@ -66,6 +66,7 @@ function appendShareParams(u, viewer) {
     u.searchParams.set(k, v);
   }
   u.searchParams.delete("lodm");
+  u.searchParams.delete("lodpx");
   for (const [k, v] of GiaViewer.sceneViewToUrlEntries(viewer)) {
     u.searchParams.set(k, v);
   }
@@ -98,9 +99,9 @@ export function mountUi({ modelId, modelBase, viewer }) {
         <span class="whitespace-nowrap">Background</span>
         <input id="gia-bg-color" type="color" class="h-7 w-10 cursor-pointer rounded border border-gia-border bg-transparent p-0" title="Scene background" />
       </label>
-      <label class="flex cursor-pointer items-center gap-2 rounded-lg border border-gia-border bg-gia-panel px-3 py-2 text-xs text-gia-muted backdrop-blur-md hover:border-white/20" title="Distance in mm from placement: full mesh while closer, convex hull beyond. Empty = LOD off (mesh only). 0 = hull only everywhere.">
-        <span class="whitespace-nowrap">LOD (mm)</span>
-        <input id="gia-lodm" type="number" min="0" step="100" class="w-[4.75rem] rounded border border-gia-border bg-black/40 px-1.5 py-1 font-mono text-[11px] text-white focus:border-gia-accent focus:outline-none" />
+      <label class="flex cursor-pointer items-center gap-2 rounded-lg border border-gia-border bg-gia-panel px-3 py-2 text-xs text-gia-muted backdrop-blur-md hover:border-white/20" title="When the mesh’s on-screen diameter (bounding sphere) is below this many pixels, show convex hull. Empty = LOD off. 0 = hull only. Try ~80–200 for facades.">
+        <span class="whitespace-nowrap">LOD (px)</span>
+        <input id="gia-lodpx" type="number" min="0" step="5" class="w-[4.75rem] rounded border border-gia-border bg-black/40 px-1.5 py-1 font-mono text-[11px] text-white focus:border-gia-accent focus:outline-none" />
       </label>
     </div>
   `;
@@ -149,7 +150,7 @@ export function mountUi({ modelId, modelBase, viewer }) {
           <button type="button" id="gia-look-copy" class="rounded-lg border border-gia-border bg-black/30 px-2.5 py-1.5 text-xs text-gia-muted hover:border-white/25 hover:text-white">Copy view link</button>
         </div>
         <p id="gia-look-hint" class="mt-2 text-[10px] leading-snug text-gia-muted/90">
-          Link includes lighting (<span class="font-mono">exp</span>, …), <span class="font-mono">bg</span>, camera <span class="font-mono">cx</span>–<span class="font-mono">cz</span>, target <span class="font-mono">tx</span>–<span class="font-mono">tz</span>, <span class="font-mono">lodm</span> (mm), <span class="font-mono">ssao</span>
+          Link includes lighting (<span class="font-mono">exp</span>, …), <span class="font-mono">bg</span>, camera <span class="font-mono">cx</span>–<span class="font-mono">cz</span>, target <span class="font-mono">tx</span>–<span class="font-mono">tz</span>, <span class="font-mono">lodpx</span>, <span class="font-mono">ssao</span>
         </p>
       </div>
     </details>
@@ -299,34 +300,34 @@ export function mountUi({ modelId, modelBase, viewer }) {
   const gridEl = top.querySelector("#gia-grid");
   gridEl.addEventListener("change", () => viewer.setGridVisible(gridEl.checked));
 
-  const lodmEl = top.querySelector("#gia-lodm");
+  const lodpxEl = top.querySelector("#gia-lodpx");
   function syncLodFieldFromViewer() {
-    const v = viewer.getLodDistanceMm();
-    lodmEl.value = v === null ? "" : String(v);
+    const v = viewer.getLodDetailMinPx();
+    lodpxEl.value = v === null ? "" : String(v);
   }
   syncLodFieldFromViewer();
-  lodmEl.placeholder = "off";
+  lodpxEl.placeholder = "off";
   const applyLodFromInput = () => {
-    const raw = lodmEl.value.trim();
+    const raw = lodpxEl.value.trim();
     if (raw === "") {
-      viewer.setLodDistanceMm(null);
+      viewer.setLodDetailMinPx(null);
       syncLodFieldFromViewer();
       return;
     }
     const n = parseFloat(raw);
     if (!Number.isFinite(n) || n < 0) {
-      viewer.setLodDistanceMm(null);
+      viewer.setLodDetailMinPx(null);
       syncLodFieldFromViewer();
       return;
     }
-    viewer.setLodDistanceMm(n);
+    viewer.setLodDetailMinPx(n);
     syncLodFieldFromViewer();
   };
-  lodmEl.addEventListener("change", () => {
+  lodpxEl.addEventListener("change", () => {
     applyLodFromInput();
     syncLookUrl();
   });
-  lodmEl.addEventListener("keydown", (e) => {
+  lodpxEl.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       applyLodFromInput();
       syncLookUrl();

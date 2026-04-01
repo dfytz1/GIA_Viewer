@@ -59,13 +59,15 @@ export class GiaViewer {
     this._shadowInvMatrix = new THREE.Matrix4();
     this._shadowCornerScratch = new THREE.Vector3();
     this._orbitWasMoving = false;
+    /** After orbit stops, defer SSAO (composer) this many more frames to avoid stutter. */
+    this._ssaoResumeFrames = 0;
     /** @type {{ detail: import("three").Mesh; hull: import("three").Mesh; pivot: import("three").Object3D }[]} */
     this._lodPairs = [];
     /**
-     * LOD distance in millimeters (Rhino mm → glTF, see giaLod.MM_TO_SCENE_UNIT).
-     * `null` — full mesh only. `0` — always hull. `> 0` — hull when camera farther than this (mm).
+     * Screen-space LOD: projected bounding-sphere diameter (CSS px). `null` — off (mesh only).
+     * `0` — always hull. `> 0` — hull when on-screen diameter &lt; this (see giaLod.js).
      */
-    this.lodDistanceMm = null;
+    this.lodDetailMinPx = null;
     this._shadowOrbitSuspended = false;
     this._shadowMetricScale = new THREE.Vector3();
     this._shadowSceneSize = new THREE.Vector3();
@@ -263,11 +265,11 @@ export class GiaViewer {
       ["tz", f(t.z)],
     ];
     if (
-      viewer.lodDistanceMm != null &&
-      Number.isFinite(viewer.lodDistanceMm) &&
-      viewer.lodDistanceMm >= 0
+      viewer.lodDetailMinPx != null &&
+      Number.isFinite(viewer.lodDetailMinPx) &&
+      viewer.lodDetailMinPx >= 0
     )
-      entries.push(["lodm", String(Number(viewer.lodDistanceMm.toFixed(2)))]);
+      entries.push(["lodpx", String(Number(viewer.lodDetailMinPx.toFixed(1)))]);
     return entries;
   }
 
@@ -380,29 +382,43 @@ export class GiaViewer {
   setSsao(enabled) {
     this.useSsao = !!enabled;
     this.ssaoPass.enabled = this.useSsao;
+    if (!this.useSsao) this._ssaoResumeFrames = 0;
     this._invalidateRender();
   }
 
-  getLodDistanceMm() {
-    return this.lodDistanceMm;
+  getLodDetailMinPx() {
+    return this.lodDetailMinPx;
   }
 
   /**
-   * @param {number | null | undefined} mm
+   * @param {number | null | undefined} px
    *   `null`/`undefined`/empty — LOD off (full mesh only).
    *   `0` — always show convex hull where exported.
-   *   `> 0` — hull when camera–pivot distance exceeds this many mm.
+   *   `> 0` — hull when projected mesh diameter (px) is below this threshold.
    */
-  setLodDistanceMm(mm) {
-    if (mm === null || mm === undefined || mm === "") {
-      this.lodDistanceMm = null;
+  setLodDetailMinPx(px) {
+    if (px === null || px === undefined || px === "") {
+      this.lodDetailMinPx = null;
     } else {
-      const v = Number(mm);
-      if (!Number.isFinite(v) || v < 0) this.lodDistanceMm = null;
-      else this.lodDistanceMm = v;
+      const v = Number(px);
+      if (!Number.isFinite(v) || v < 0) this.lodDetailMinPx = null;
+      else this.lodDetailMinPx = v;
     }
-    updateGiaLodVisibility(this._lodPairs, this.camera, this.lodDistanceMm);
+    updateGiaLodVisibility(
+      this._lodPairs,
+      this.camera,
+      this._lodViewportPx(),
+      this.lodDetailMinPx,
+    );
     this._invalidateRender();
+  }
+
+  _lodViewportPx() {
+    const el = this.renderer.domElement;
+    return {
+      width: el.clientWidth || 1,
+      height: el.clientHeight || 1,
+    };
   }
 
   setGridVisible(v) {
@@ -578,6 +594,16 @@ export class GiaViewer {
   _animate() {
     requestAnimationFrame(this._animate);
     const moved = this.controls.update();
+    if (moved) {
+      this._ssaoResumeFrames = 0;
+    } else if (this.useSsao && this._orbitWasMoving && !moved) {
+      this._ssaoResumeFrames = 3;
+    }
+    if (this._ssaoResumeFrames > 0) {
+      this._ssaoResumeFrames--;
+    }
+    const runSsao = this.useSsao && this._ssaoResumeFrames === 0;
+
     if (this.useSsao && this._orbitWasMoving && !moved) {
       this._needsRender = true;
     }
@@ -585,22 +611,23 @@ export class GiaViewer {
 
     if (
       this._lodPairs.length > 0 &&
-      this.lodDistanceMm != null &&
-      Number.isFinite(this.lodDistanceMm) &&
-      this.lodDistanceMm >= 0 &&
+      this.lodDetailMinPx != null &&
+      Number.isFinite(this.lodDetailMinPx) &&
+      this.lodDetailMinPx >= 0 &&
       (moved || this._needsRender)
     ) {
       updateGiaLodVisibility(
         this._lodPairs,
         this.camera,
-        this.lodDistanceMm,
+        this._lodViewportPx(),
+        this.lodDetailMinPx,
       );
     }
 
     if (moved || this._needsRender) {
       if (this.useSsao && moved) {
         this.renderer.render(this.scene, this.camera);
-      } else if (this.useSsao) {
+      } else if (runSsao) {
         this.composer.render();
       } else {
         this.renderer.render(this.scene, this.camera);
@@ -1090,6 +1117,7 @@ export class GiaViewer {
 
           this.modelRoot.add(root);
           const instStats = this._maybeMergeInstancing(root);
+          this.modelRoot.updateMatrixWorld(true);
           this._tuneMeshShadowFlags();
           this._rebuildMeshMaterialCache();
           buildBoundsTreesForModelRoot(this.modelRoot);
@@ -1097,7 +1125,8 @@ export class GiaViewer {
           updateGiaLodVisibility(
             this._lodPairs,
             this.camera,
-            this.lodDistanceMm,
+            this._lodViewportPx(),
+            this.lodDetailMinPx,
           );
           this._tuneForHeavyScene(instStats);
           this._fitCameraToObject(this.modelRoot);
