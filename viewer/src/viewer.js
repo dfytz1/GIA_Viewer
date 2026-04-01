@@ -86,7 +86,10 @@ export class GiaViewer {
     this.controls.minDistance = 0.1;
     this.controls.maxDistance = 1e6;
     this.controls.enableDblClickZoom = false;
-    // Do not call _syncCameraFrustum on every change — varying projection every frame causes harsh flicker.
+    // Full frustum sync only on fit/focus; during orbit we only expand `far` when needed (see _expandCameraFarIfNeeded).
+    this.controls.addEventListener("change", () => {
+      this._expandCameraFarIfNeeded();
+    });
     this.controls.addEventListener("start", () => {
       if (!this._shadowOrbitSuspended) {
         this._shadowOrbitSuspended = true;
@@ -549,15 +552,13 @@ export class GiaViewer {
   }
 
   /**
-   * Near/far for the loaded model. Call only when the camera is placed (fit, URL view, double-click focus) —
-   * not while orbiting; updating the projection matrix every frame makes geometry flicker badly.
-   *
-   * Uses a tight-ish stable far (bbox + max dolly) instead of a flat 1e7 so the depth buffer resolves
-   * nearby coplanar surfaces when zoomed out. Logarithmic depth helps when far is still large.
+   * Near/far for the loaded model. Call when the camera is placed (fit, URL view, double-click focus).
+   * `near` scales with model size to keep a sane depth precision ratio; `far` uses bbox + max dolly.
+   * While orbiting, only {@link _expandCameraFarIfNeeded} runs (expands `far` only, never shrinks).
    */
   _syncCameraFrustum() {
     if (this._bounds.isEmpty()) {
-      this.camera.near = 0.01;
+      this.camera.near = 0.02;
       this.camera.far = 1e5;
       this.camera.updateProjectionMatrix();
       return;
@@ -587,15 +588,44 @@ export class GiaViewer {
     const boundR = Math.sqrt(
       half.x * half.x + half.y * half.y + half.z * half.z,
     );
-    const diagonal = Math.sqrt(sx * sx + sy * sy + sz * sz);
+    const modelDiag = Math.sqrt(sx * sx + sy * sy + sz * sz);
 
-    this.camera.near = 0.02;
+    this.camera.near = Math.max(0.02, modelDiag * 0.0001);
     const orbit = this.controls.maxDistance;
-    let far = orbit + boundR * 4 + diagonal * 2;
-    far = Math.max(far, maxDist * 2.75, diagonal * 6, 500);
+    let far = orbit + boundR * 4 + modelDiag * 2;
+    far = Math.max(far, maxDist * 2.75, modelDiag * 6, 500);
     far = Math.min(far, 2e6);
     this.camera.far = far;
     this.camera.updateProjectionMatrix();
+  }
+
+  /**
+   * OrbitControls `change`: grow `far` only when the camera needs more depth range (no shrink — avoids flicker).
+   */
+  _expandCameraFarIfNeeded() {
+    if (this._bounds.isEmpty()) return;
+    const cp = this.camera.position;
+    const t = this.controls.target;
+    const c = this._bboxCorners;
+    const { min, max } = this._bounds;
+    c[0].set(min.x, min.y, min.z);
+    c[1].set(max.x, min.y, min.z);
+    c[2].set(min.x, max.y, min.z);
+    c[3].set(max.x, max.y, min.z);
+    c[4].set(min.x, min.y, max.z);
+    c[5].set(max.x, min.y, max.z);
+    c[6].set(min.x, max.y, max.z);
+    c[7].set(max.x, max.y, max.z);
+    let maxDist = cp.distanceTo(t);
+    for (let i = 0; i < 8; i++) {
+      maxDist = Math.max(maxDist, cp.distanceTo(c[i]));
+    }
+    maxDist = Math.max(maxDist, 1);
+    const needed = Math.max(maxDist * 3, this.camera.far);
+    if (needed > this.camera.far * 1.05) {
+      this.camera.far = Math.min(needed, 2e6);
+      this.camera.updateProjectionMatrix();
+    }
   }
 
   _targetPixelRatioFromWindow() {
