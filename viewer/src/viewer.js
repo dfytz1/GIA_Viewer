@@ -58,6 +58,10 @@ export class GiaViewer {
     this._shadowInvMatrix = new THREE.Matrix4();
     this._shadowCornerScratch = new THREE.Vector3();
     this._orbitWasMoving = false;
+    this._shadowOrbitSuspended = false;
+    this._shadowMetricScale = new THREE.Vector3();
+    this._shadowSceneSize = new THREE.Vector3();
+    this._instShadowBox = new THREE.Box3();
 
     this.camera = new THREE.PerspectiveCamera(45, w / h, 0.02, 1e7);
     this.camera.position.set(12, 8, 12);
@@ -70,6 +74,18 @@ export class GiaViewer {
     this.controls.maxDistance = 1e6;
     this.controls.enableDblClickZoom = false;
     // Do not call _syncCameraFrustum on every change — varying projection every frame causes harsh flicker.
+    this.controls.addEventListener("start", () => {
+      if (this._shadowOrbitSuspended) return;
+      this._shadowOrbitSuspended = true;
+      this.renderer.shadowMap.enabled = false;
+      this._invalidateRender();
+    });
+    this.controls.addEventListener("end", () => {
+      if (!this._shadowOrbitSuspended) return;
+      this._shadowOrbitSuspended = false;
+      this.renderer.shadowMap.enabled = true;
+      this._invalidateRender();
+    });
 
     this.raycaster = new THREE.Raycaster();
     this._ndc = new THREE.Vector2();
@@ -946,6 +962,50 @@ export class GiaViewer {
     this._invalidateRender();
   }
 
+  /**
+   * After instancing: refresh geometry bounds for frustum culling, then only large meshes cast/receive
+   * shadows (avoids shadow-pass cost for tiny interior geometry).
+   */
+  _tuneMeshShadowFlags() {
+    if (!this.modelRoot.children.length) return;
+    this.modelRoot.updateMatrixWorld(true);
+    const sceneBox = new THREE.Box3().setFromObject(this.modelRoot);
+    if (sceneBox.isEmpty()) return;
+    const sceneSize = sceneBox.getSize(this._shadowSceneSize).length();
+    const minCast = Math.max(0.2, sceneSize * 0.014);
+    const minRecv = Math.max(0.06, sceneSize * 0.004);
+
+    this.modelRoot.traverse((obj) => {
+      if (!obj.isMesh || obj.isSkinnedMesh) return;
+      const g = obj.geometry;
+      if (!g?.isBufferGeometry) return;
+
+      g.computeBoundingSphere();
+      g.computeBoundingBox();
+
+      let metric = 0;
+      if (obj.isInstancedMesh) {
+        this._instShadowBox.setFromObject(obj);
+        if (!this._instShadowBox.isEmpty()) {
+          metric =
+            this._instShadowBox.getSize(this._shadowMetricScale).length() * 0.5;
+        }
+      } else {
+        const r = g.boundingSphere?.radius ?? 0;
+        obj.getWorldScale(this._shadowMetricScale);
+        const sx = Math.max(
+          this._shadowMetricScale.x,
+          this._shadowMetricScale.y,
+          this._shadowMetricScale.z,
+        );
+        metric = r * sx;
+      }
+
+      obj.castShadow = metric >= minCast;
+      obj.receiveShadow = metric >= minRecv;
+    });
+  }
+
   loadFromUrl(url) {
     return new Promise((resolve, reject) => {
       this._clearSelectionHighlight();
@@ -969,8 +1029,6 @@ export class GiaViewer {
 
           root.traverse((c) => {
             if (!c.isMesh) return;
-            c.castShadow = true;
-            c.receiveShadow = true;
             const mats = Array.isArray(c.material) ? c.material : [c.material];
             mats.forEach((m) => {
               if (!m) return;
@@ -980,6 +1038,7 @@ export class GiaViewer {
 
           this.modelRoot.add(root);
           const instStats = this._maybeMergeInstancing(root);
+          this._tuneMeshShadowFlags();
           this._rebuildMeshMaterialCache();
           buildBoundsTreesForModelRoot(this.modelRoot);
           this._tuneForHeavyScene(instStats);
