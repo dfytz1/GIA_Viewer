@@ -96,17 +96,6 @@ export function mountUi({ modelId, modelBase, viewer }) {
         <input id="gia-grid" type="checkbox" class="accent-gia-accent" checked />
         <span>Grid</span>
       </label>
-      <label class="flex cursor-pointer items-center gap-2 rounded-lg border border-gia-border bg-gia-panel px-3 py-2 text-xs text-gia-muted backdrop-blur-md hover:border-white/20">
-        <input id="gia-ground" type="checkbox" class="accent-gia-accent" />
-        <span>Ground plane</span>
-      </label>
-      <div class="flex items-center gap-1.5 rounded-lg border border-gia-border bg-gia-panel px-2 py-1.5 backdrop-blur-md">
-        <button type="button" id="gia-bg-btn" class="flex items-center gap-2 rounded-md border border-gia-border bg-black/30 px-2 py-1 text-xs text-gia-muted hover:border-white/25 hover:text-white" title="Choose scene background color" aria-label="Choose background color">
-          <span id="gia-bg-swatch" class="h-6 w-6 shrink-0 rounded border border-white/25 shadow-inner" aria-hidden="true"></span>
-          <span class="whitespace-nowrap">Background</span>
-        </button>
-        <input id="gia-bg-color" type="color" class="sr-only" title="Scene background" />
-      </div>
       <label class="flex cursor-pointer items-center gap-2 rounded-lg border border-gia-border bg-gia-panel px-3 py-2 text-xs text-gia-muted backdrop-blur-md hover:border-white/20" title="When the mesh’s on-screen diameter (bounding sphere) is below this many pixels, show convex hull. Empty = LOD off. 0 = hull only. Try ~80–200 for facades.">
         <span class="whitespace-nowrap">LOD (px)</span>
         <input id="gia-lodpx" type="number" min="0" step="5" class="w-[4.75rem] rounded border border-gia-border bg-black/40 px-1.5 py-1 font-mono text-[11px] text-white focus:border-gia-accent focus:outline-none" />
@@ -119,6 +108,23 @@ export function mountUi({ modelId, modelBase, viewer }) {
   panel.className =
     "pointer-events-auto fixed bottom-0 left-0 z-10 m-3 max-w-[min(100%-24px,380px)] rounded-xl border border-gia-border bg-gia-panel p-4 shadow-xl backdrop-blur-md sm:m-4";
   panel.innerHTML = `
+    <div class="mb-3 rounded-xl border border-gia-border bg-black/30 p-3 shadow-inner">
+      <div class="mb-2 text-xs font-semibold uppercase tracking-wider text-white">Scene</div>
+      <label class="mb-3 flex cursor-pointer items-center gap-2.5 text-sm text-white">
+        <input id="gia-ground" type="checkbox" class="h-4 w-4 shrink-0 accent-gia-accent" />
+        <span>Use ground plane</span>
+      </label>
+      <div class="space-y-2">
+        <div class="text-xs font-medium text-gia-muted">Background color</div>
+        <div class="flex flex-wrap items-stretch gap-2">
+          <input id="gia-bg-color" type="color" class="min-h-[2.5rem] min-w-[5.5rem] flex-1 cursor-pointer rounded-lg border-2 border-gia-border bg-black/40 p-1 sm:max-w-[9rem]" title="Scene background" />
+          <button type="button" id="gia-bg-btn" class="rounded-lg border border-gia-border bg-gia-accent/90 px-3 py-2 text-xs font-semibold text-white hover:brightness-110" title="Open system color picker" aria-label="Choose background color">
+            Choose color
+          </button>
+        </div>
+        <p class="text-[10px] leading-snug text-gia-muted">Ground + color sync to the URL when “Sync look” is on (<span class="font-mono">gp</span>, <span class="font-mono">bg</span>).</p>
+      </div>
+    </div>
     <details class="group rounded-lg border border-white/10 bg-black/20">
       <summary class="cursor-pointer select-none list-none px-2 py-2.5 text-xs font-semibold uppercase tracking-wider text-gia-muted marker:content-none hover:text-white [&::-webkit-details-marker]:hidden">
         <span class="inline-block w-4 origin-center text-gia-muted transition-transform group-open:rotate-90">▸</span>
@@ -308,7 +314,7 @@ export function mountUi({ modelId, modelBase, viewer }) {
   const gridEl = top.querySelector("#gia-grid");
   gridEl.addEventListener("change", () => viewer.setGridVisible(gridEl.checked));
 
-  const groundEl = top.querySelector("#gia-ground");
+  const groundEl = panel.querySelector("#gia-ground");
   groundEl.checked = viewer.getGroundPlaneVisible();
   groundEl.addEventListener("change", () => {
     viewer.setGroundPlaneVisible(groundEl.checked);
@@ -349,20 +355,16 @@ export function mountUi({ modelId, modelBase, viewer }) {
     }
   });
 
-  const bgColorEl = top.querySelector("#gia-bg-color");
-  const bgBtn = top.querySelector("#gia-bg-btn");
-  const bgSwatch = top.querySelector("#gia-bg-swatch");
-  function syncBgSwatch() {
-    const hex = viewer.getBackgroundColorHex();
-    bgColorEl.value = hex;
-    if (bgSwatch) bgSwatch.style.backgroundColor = hex;
+  const bgColorEl = panel.querySelector("#gia-bg-color");
+  const bgBtn = panel.querySelector("#gia-bg-btn");
+  function syncBgFromViewer() {
+    bgColorEl.value = viewer.getBackgroundColorHex();
   }
-  syncBgSwatch();
+  syncBgFromViewer();
   bgBtn.addEventListener("click", () => bgColorEl.click());
   bgColorEl.addEventListener("input", () => {
     const v = bgColorEl.value;
     viewer.setBackgroundColor(v);
-    if (bgSwatch) bgSwatch.style.backgroundColor = v;
     try {
       localStorage.setItem("gia-bg", v);
     } catch {

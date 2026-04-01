@@ -31,7 +31,7 @@ namespace GIAViewer.Components
             : base(
                 "Block To Bim",
                 "BlkBim",
-                "Block instance tree → definitions (one branch per unique block name) + instances (same tree as Blocks).",
+                "Block instance tree → definitions (one branch per unique block name) + instances (same tree as Blocks). For Publish, merge **this component’s** D and I together — wiring D from one Block To Bim and I from another breaks MeshId matching.",
                 "GIA Viewer",
                 "Data")
         {

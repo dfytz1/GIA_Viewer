@@ -1119,8 +1119,8 @@ export class GiaViewer {
   }
 
   /**
-   * After load: instancing only for large repeated geometry (≥10k verts), then Speckle-style
-   * material batches (mergeGeometries with draw groups, split at 500k verts, async yields).
+   * After load: GPU instancing for repeated geometry (threshold scales down when many copies),
+   * then Speckle-style material batches (mergeGeometries with draw groups, vertex + mesh-count caps, async yields).
    * URL ?noinst=1 skips instancing; ?nomerge=1 skips material batching.
    */
   async _maybeMergeInstancing(root) {
@@ -1147,11 +1147,11 @@ export class GiaViewer {
     let mergedGroups = 0;
 
     if (!sp.has("noinst")) {
-      const stats = mergeIdenticalMeshesToInstanced(root, { minGroupSize: 3 });
+      const stats = mergeIdenticalMeshesToInstanced(root, { minGroupSize: 2 });
       mergedGroups = stats.mergedGroups;
       if (mergedGroups > 0) {
         console.info(
-          `[GIA] GPU instancing (geom ≥10k verts): ${stats.meshCountBefore} mesh draws → ${stats.meshCountAfter} (${mergedGroups} groups; ?noinst=1 to disable)`,
+          `[GIA] GPU instancing: ${stats.meshCountBefore} mesh draws → ${stats.meshCountAfter} (${mergedGroups} groups; ?noinst=1 to disable)`,
         );
       }
     }

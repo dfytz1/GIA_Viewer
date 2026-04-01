@@ -18,12 +18,25 @@ export function installMeshBvhRaycastExtensions() {
 
 installMeshBvhRaycastExtensions();
 
+/** Beyond this, per-mesh BVH build dominates load time (e.g. many block instances before instancing). */
+const MAX_MESHES_FOR_BVH = 2000;
+
 /**
  * Build a BVH per BufferGeometry under root (shared geometries only built once).
  * Call after instancing merge so dense scenes get one tree per shared geometry.
  */
 export function buildBoundsTreesForModelRoot(root) {
   root.updateMatrixWorld(true);
+  let meshCount = 0;
+  root.traverse((obj) => {
+    if (obj.isMesh && !obj.isSkinnedMesh) meshCount++;
+  });
+  if (meshCount > MAX_MESHES_FOR_BVH) {
+    console.info(
+      `[GIA] Skipping BVH (${meshCount} meshes > ${MAX_MESHES_FOR_BVH}); picking uses default raycast.`,
+    );
+    return;
+  }
   root.traverse((obj) => {
     if (!obj.isMesh || obj.isSkinnedMesh) return;
     const g = obj.geometry;

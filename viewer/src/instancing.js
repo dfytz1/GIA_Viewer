@@ -7,6 +7,12 @@ export const MIN_INSTANCED_BATCH_VERTICES = 10_000;
 /** Split material batches so merged vertex buffers stay under this (Speckle-style). */
 export const MAX_BATCH_VERTICES = 500_000;
 
+/** Also split by mesh count so one material with many block instances cannot freeze the main thread. */
+export const MAX_MESHES_PER_MERGE_CHUNK = 48;
+
+/** Yield while cloning/applying matrices during a large merge batch. */
+export const ASYNC_YIELD_EVERY_MESH_CLONES = 20;
+
 /** Yield to the event loop every N material buckets processed (AsyncPause-style). */
 export const ASYNC_YIELD_EVERY_MATERIALS = 20;
 
@@ -106,9 +112,13 @@ export function mergeIdenticalMeshesToInstanced(root, options = {}) {
     if (!geometry || !material) continue;
 
     const vertCount = geometry.attributes.position.count;
-    if (vertCount < minVertices) continue;
-
     const count = group.length;
+    let effMinVerts = minVertices;
+    if (count >= 500) effMinVerts = 1;
+    else if (count >= 64) effMinVerts = Math.min(effMinVerts, 128);
+    else if (count >= 8) effMinVerts = Math.min(effMinVerts, 2000);
+    if (vertCount < effMinVerts) continue;
+
     const instanced = new THREE.InstancedMesh(geometry, material, count);
     instanced.name = `gia-instanced-${mergedGroups}`;
     instanced.castShadow = template.castShadow;
@@ -205,7 +215,11 @@ export async function mergeMeshesByMaterialBatch(root, options = {}) {
     let curVerts = 0;
     for (const m of meshes) {
       const v = meshPositionVertexCount(m);
-      if (cur.length > 0 && curVerts + v > MAX_BATCH_VERTICES) {
+      const overVerts =
+        cur.length > 0 && curVerts + v > MAX_BATCH_VERTICES;
+      const overCount =
+        cur.length >= MAX_MESHES_PER_MERGE_CHUNK;
+      if (overVerts || overCount) {
         subBatches.push(cur);
         cur = [];
         curVerts = 0;
@@ -219,14 +233,22 @@ export async function mergeMeshesByMaterialBatch(root, options = {}) {
       if (batch.length < 2) continue;
 
       const geos = [];
+      let cloneI = 0;
       for (const m of batch) {
         m.updateWorldMatrix(true, false);
         const g = m.geometry.clone();
         tmp.copy(invRoot).multiply(m.matrixWorld);
         g.applyMatrix4(tmp);
         geos.push(g);
+        cloneI++;
+        if (cloneI % ASYNC_YIELD_EVERY_MESH_CLONES === 0) {
+          await new Promise((r) => setTimeout(r, 0));
+        }
       }
 
+      if (geos.length > 24) {
+        await new Promise((r) => setTimeout(r, 0));
+      }
       const merged = mergeGeometries(geos, true);
       if (!merged) {
         geos.forEach((g) => g.dispose());
