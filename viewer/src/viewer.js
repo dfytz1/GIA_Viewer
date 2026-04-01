@@ -86,7 +86,7 @@ export class GiaViewer {
     this.controls.minDistance = 0.1;
     this.controls.maxDistance = 1e6;
     this.controls.enableDblClickZoom = false;
-    // During orbit: shrink/grow `near` from view distance (see _syncCameraNearFromBounds); expand `far` only when needed.
+    // During orbit: sync `near` from view; keep `far` covering farthest bbox corner (may shrink, see _expandCameraFarIfNeeded).
     this.controls.addEventListener("change", () => {
       this._syncCameraNearFromBounds();
       this._expandCameraFarIfNeeded();
@@ -626,14 +626,14 @@ export class GiaViewer {
   }
 
   /**
-   * OrbitControls `change`: grow `far` only when the camera needs more depth range (no shrink — avoids flicker).
+   * OrbitControls `change`: set `far` from the farthest scene bbox corner from the camera (orbit target is irrelevant).
+   * Allows shrinking when zoomed in; 15% hysteresis avoids updating the projection matrix every frame.
    */
   _expandCameraFarIfNeeded() {
     if (this._bounds.isEmpty()) return;
     const cp = this.camera.position;
-    const t = this.controls.target;
-    const c = this._bboxCorners;
     const { min, max } = this._bounds;
+    const c = this._bboxCorners;
     c[0].set(min.x, min.y, min.z);
     c[1].set(max.x, min.y, min.z);
     c[2].set(min.x, max.y, min.z);
@@ -642,14 +642,16 @@ export class GiaViewer {
     c[5].set(max.x, min.y, max.z);
     c[6].set(min.x, max.y, max.z);
     c[7].set(max.x, max.y, max.z);
-    let maxDist = cp.distanceTo(t);
+
+    let maxDist = 0;
     for (let i = 0; i < 8; i++) {
       maxDist = Math.max(maxDist, cp.distanceTo(c[i]));
     }
     maxDist = Math.max(maxDist, 1);
-    const needed = Math.max(maxDist * 3, this.camera.far);
-    if (needed > this.camera.far * 1.05) {
-      this.camera.far = Math.min(needed, 2e6);
+
+    const needed = maxDist * 2.5;
+    if (Math.abs(needed - this.camera.far) / this.camera.far > 0.15) {
+      this.camera.far = Math.min(Math.max(needed, 500), 2e6);
       this.camera.updateProjectionMatrix();
     }
   }
