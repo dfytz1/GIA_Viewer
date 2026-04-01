@@ -553,43 +553,38 @@ export class GiaViewer {
   }
 
   /**
-   * Keep the perspective near plane below the distance to the scene box so zoom-in never leaves the
-   * whole model in front of `near` (large `modelDiag * 1e-4` alone clips tight views on big models).
+   * Perspective near: scale lightly with model size (depth precision) and with camera–target
+   * distance so zoom-in stays usable (tiny fraction of view distance, not a large fraction).
    */
   _syncCameraNearFromBounds() {
     if (this._bounds.isEmpty()) {
-      this.camera.near = 0.02;
+      this.camera.near = 0.005;
       this.camera.updateProjectionMatrix();
       return;
     }
     const { min, max } = this._bounds;
-    const cp = this.camera.position;
-    const t = this.controls.target;
-    const scratch = this._bboxCorners[0];
-    scratch.copy(cp).clamp(min, max);
-    const distToBox = cp.distanceTo(scratch);
     const sx = max.x - min.x;
     const sy = max.y - min.y;
     const sz = max.z - min.z;
     const modelDiag = Math.sqrt(sx * sx + sy * sy + sz * sz);
-    const nearFromModel = Math.max(0.02, modelDiag * 0.0001);
-    const distTarget = cp.distanceTo(t);
-    const capFromTarget = distTarget * 0.22;
-    const capFromBox =
-      distToBox > 1e-5 ? distToBox * 0.22 : distTarget * 0.14;
-    const nearCap = Math.max(0.02, Math.min(capFromTarget, capFromBox));
-    this.camera.near = Math.min(nearFromModel, nearCap);
+
+    const nearFromModel = Math.max(0.005, modelDiag * 0.0001);
+
+    const distTarget = this.camera.position.distanceTo(this.controls.target);
+    const nearFromView = Math.max(0.005, distTarget * 0.002);
+
+    this.camera.near = Math.min(nearFromModel, nearFromView);
     this.camera.updateProjectionMatrix();
   }
 
   /**
    * Near/far for the loaded model. Call when the camera is placed (fit, URL view, double-click focus).
-   * `near` scales with model size for depth precision but is capped from view distance; `far` uses bbox + max dolly.
+   * `near` is the smaller of a model-size term and a small fraction of camera–target distance; `far` uses bbox + max dolly.
    * While orbiting, {@link _syncCameraNearFromBounds} and {@link _expandCameraFarIfNeeded} run on each change.
    */
   _syncCameraFrustum() {
     if (this._bounds.isEmpty()) {
-      this.camera.near = 0.02;
+      this.camera.near = 0.005;
       this.camera.far = 1e5;
       this.camera.updateProjectionMatrix();
       return;
