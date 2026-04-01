@@ -1,3 +1,77 @@
+import { GiaViewer } from "./viewer.js";
+
+function debounce(fn, ms) {
+  let t;
+  return (...args) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), ms);
+  };
+}
+
+function formatLookValue(key, n) {
+  if (key === "ssaoKernelRadius") return String(Math.round(n));
+  if (key.includes("ssao") && key.includes("Distance"))
+    return n < 0.01 ? n.toExponential(2) : n.toFixed(4);
+  return n.toFixed(3);
+}
+
+const LOOK_SLIDERS = [
+  {
+    key: "toneMappingExposure",
+    label: "Exposure (tone map)",
+    min: 0.05,
+    max: 3,
+    step: 0.05,
+  },
+  {
+    key: "environmentIntensity",
+    label: "IBL / environment",
+    min: 0,
+    max: 2,
+    step: 0.05,
+  },
+  { key: "sunIntensity", label: "Sun (directional)", min: 0, max: 4, step: 0.05 },
+  {
+    key: "fillIntensity",
+    label: "Sky / ground fill",
+    min: 0,
+    max: 2,
+    step: 0.05,
+  },
+  {
+    key: "ssaoKernelRadius",
+    label: "AO kernel radius",
+    min: 1,
+    max: 48,
+    step: 1,
+  },
+  {
+    key: "ssaoMinDistance",
+    label: "AO min depth",
+    min: 0.0001,
+    max: 0.025,
+    step: 0.0001,
+  },
+  {
+    key: "ssaoMaxDistance",
+    label: "AO max depth",
+    min: 0.02,
+    max: 0.6,
+    step: 0.005,
+  },
+];
+
+function appendShareParams(u, viewer) {
+  for (const [k, v] of GiaViewer.lookSettingsToUrlEntries(viewer.getLookSettings())) {
+    u.searchParams.set(k, v);
+  }
+  for (const [k, v] of GiaViewer.sceneViewToUrlEntries(viewer)) {
+    u.searchParams.set(k, v);
+  }
+  if (viewer.useSsao) u.searchParams.delete("ssao");
+  else u.searchParams.set("ssao", "0");
+}
+
 export function mountUi({ modelId, modelBase, viewer }) {
   const app = document.getElementById("app");
 
@@ -12,7 +86,7 @@ export function mountUi({ modelId, modelBase, viewer }) {
     </div>
     <div class="pointer-events-auto flex flex-wrap items-center justify-end gap-2">
       <label class="flex cursor-pointer items-center gap-2 rounded-lg border border-gia-border bg-gia-panel px-3 py-2 text-xs text-gia-muted backdrop-blur-md hover:border-white/20">
-        <input id="gia-ssao" type="checkbox" class="accent-gia-accent" checked />
+        <input id="gia-ssao" type="checkbox" class="accent-gia-accent" />
         <span>Ambient occlusion</span>
       </label>
       <label class="flex cursor-pointer items-center gap-2 rounded-lg border border-gia-border bg-gia-panel px-3 py-2 text-xs text-gia-muted backdrop-blur-md hover:border-white/20">
@@ -31,24 +105,49 @@ export function mountUi({ modelId, modelBase, viewer }) {
   panel.className =
     "pointer-events-auto fixed bottom-0 left-0 z-10 m-3 max-w-[min(100%-24px,380px)] rounded-xl border border-gia-border bg-gia-panel p-4 shadow-xl backdrop-blur-md sm:m-4";
   panel.innerHTML = `
-    <div class="mb-3 text-xs font-semibold uppercase tracking-wider text-gia-muted">Section planes</div>
-    <div class="space-y-3">
-      <label class="flex items-center gap-2 text-xs text-gia-muted">
-        <input id="gia-sec-x-on" type="checkbox" class="accent-gia-accent" />
-        <span class="w-6 font-mono text-white">X</span>
-        <input id="gia-sec-x" type="range" class="flex-1 accent-gia-accent" />
-      </label>
-      <label class="flex items-center gap-2 text-xs text-gia-muted">
-        <input id="gia-sec-y-on" type="checkbox" class="accent-gia-accent" />
-        <span class="w-6 font-mono text-white">Y</span>
-        <input id="gia-sec-y" type="range" class="flex-1 accent-gia-accent" />
-      </label>
-      <label class="flex items-center gap-2 text-xs text-gia-muted">
-        <input id="gia-sec-z-on" type="checkbox" class="accent-gia-accent" />
-        <span class="w-6 font-mono text-white">Z</span>
-        <input id="gia-sec-z" type="range" class="flex-1 accent-gia-accent" />
-      </label>
-    </div>
+    <details class="group rounded-lg border border-white/10 bg-black/20">
+      <summary class="cursor-pointer select-none list-none px-2 py-2.5 text-xs font-semibold uppercase tracking-wider text-gia-muted marker:content-none hover:text-white [&::-webkit-details-marker]:hidden">
+        <span class="inline-block w-4 origin-center text-gia-muted transition-transform group-open:rotate-90">▸</span>
+        Section planes
+      </summary>
+      <div class="space-y-3 border-t border-gia-border/60 px-2 pb-3 pt-3">
+        <label class="flex items-center gap-2 text-xs text-gia-muted">
+          <input id="gia-sec-x-on" type="checkbox" class="accent-gia-accent" />
+          <span class="w-6 font-mono text-white">X</span>
+          <input id="gia-sec-x" type="range" class="flex-1 accent-gia-accent" />
+        </label>
+        <label class="flex items-center gap-2 text-xs text-gia-muted">
+          <input id="gia-sec-y-on" type="checkbox" class="accent-gia-accent" />
+          <span class="w-6 font-mono text-white">Y</span>
+          <input id="gia-sec-y" type="range" class="flex-1 accent-gia-accent" />
+        </label>
+        <label class="flex items-center gap-2 text-xs text-gia-muted">
+          <input id="gia-sec-z-on" type="checkbox" class="accent-gia-accent" />
+          <span class="w-6 font-mono text-white">Z</span>
+          <input id="gia-sec-z" type="range" class="flex-1 accent-gia-accent" />
+        </label>
+      </div>
+    </details>
+    <details class="group mt-3 rounded-lg border border-white/10 bg-black/20">
+      <summary class="cursor-pointer select-none list-none px-2 py-2.5 text-xs font-semibold uppercase tracking-wider text-gia-muted marker:content-none hover:text-white [&::-webkit-details-marker]:hidden">
+        <span class="inline-block w-4 origin-center text-gia-muted transition-transform group-open:rotate-90">▸</span>
+        Lighting &amp; AO
+      </summary>
+      <div class="border-t border-gia-border/60 px-2 pb-3 pt-3">
+        <div id="gia-look-sliders" class="space-y-2.5"></div>
+        <label class="mt-3 flex cursor-pointer items-center gap-2 text-xs text-gia-muted">
+          <input id="gia-look-sync-url" type="checkbox" class="accent-gia-accent" checked />
+          <span>Sync look to address bar</span>
+        </label>
+        <div class="mt-2 flex flex-wrap gap-2">
+          <button type="button" id="gia-look-reset" class="rounded-lg border border-gia-border bg-black/30 px-2.5 py-1.5 text-xs text-gia-muted hover:border-white/25 hover:text-white">Reset look</button>
+          <button type="button" id="gia-look-copy" class="rounded-lg border border-gia-border bg-black/30 px-2.5 py-1.5 text-xs text-gia-muted hover:border-white/25 hover:text-white">Copy view link</button>
+        </div>
+        <p id="gia-look-hint" class="mt-2 text-[10px] leading-snug text-gia-muted/90">
+          Link includes lighting (<span class="font-mono">exp</span>, …), <span class="font-mono">bg</span>, camera <span class="font-mono">cx</span>–<span class="font-mono">cz</span>, target <span class="font-mono">tx</span>–<span class="font-mono">tz</span>, <span class="font-mono">ssao</span>
+        </p>
+      </div>
+    </details>
     <div class="mt-4 border-t border-gia-border pt-3">
       <div class="mb-2 text-xs font-semibold uppercase tracking-wider text-gia-muted">Open GLB URL</div>
       <div class="flex gap-2">
@@ -91,8 +190,106 @@ export function mountUi({ modelId, modelBase, viewer }) {
     }, 6000);
   }
 
+  function formatModelLoadError(err) {
+    const msg = String(err?.message || err || "Unknown error");
+    const lower = msg.toLowerCase();
+    const network =
+      lower.includes("failed to fetch") ||
+      lower.includes("networkerror") ||
+      lower.includes("load failed") ||
+      lower.includes("network request failed");
+    if (network && typeof window !== "undefined") {
+      return `${msg} — Likely R2 CORS: add "${window.location.origin}" to the bucket AllowedOrigins (see docs/R2_SETUP.md).`;
+    }
+    return msg;
+  }
+
   const ssaoEl = top.querySelector("#gia-ssao");
-  ssaoEl.addEventListener("change", () => viewer.setSsao(ssaoEl.checked));
+  ssaoEl.checked = viewer.useSsao;
+  const syncLookUrl = debounce(() => {
+    const syncEl = panel.querySelector("#gia-look-sync-url");
+    if (!syncEl?.checked) return;
+    const u = new URL(window.location.href);
+    appendShareParams(u, viewer);
+    window.history.replaceState({}, "", u);
+  }, 250);
+
+  ssaoEl.addEventListener("change", () => {
+    viewer.setSsao(ssaoEl.checked);
+    syncLookUrl();
+  });
+
+  viewer.controls.addEventListener("change", syncLookUrl);
+
+  const lookRoot = panel.querySelector("#gia-look-sliders");
+  for (const spec of LOOK_SLIDERS) {
+    const row = document.createElement("div");
+    row.className = "flex flex-col gap-0.5";
+    const head = document.createElement("div");
+    head.className = "flex items-baseline justify-between gap-2 text-xs text-gia-muted";
+    const lab = document.createElement("span");
+    lab.textContent = spec.label;
+    const val = document.createElement("span");
+    val.className =
+      "gia-look-val shrink-0 font-mono text-[10px] text-white";
+    head.append(lab, val);
+    const range = document.createElement("input");
+    range.type = "range";
+    range.className = "h-1.5 w-full accent-gia-accent";
+    range.min = String(spec.min);
+    range.max = String(spec.max);
+    range.step = String(spec.step);
+    const applyFromViewer = () => {
+      const s = viewer.getLookSettings();
+      const n = s[spec.key];
+      range.value = String(n);
+      val.textContent = formatLookValue(spec.key, n);
+    };
+    range.addEventListener("input", () => {
+      const n = parseFloat(range.value);
+      viewer.applyLookSettings({ [spec.key]: n });
+      val.textContent = formatLookValue(spec.key, n);
+      syncLookUrl();
+    });
+    row.append(head, range);
+    lookRoot.append(row);
+    applyFromViewer();
+  }
+
+  panel.querySelector("#gia-look-reset").addEventListener("click", () => {
+    viewer.resetLookSettings();
+    lookRoot.querySelectorAll('input[type="range"]').forEach((range, i) => {
+      const spec = LOOK_SLIDERS[i];
+      const s = viewer.getLookSettings();
+      range.value = String(s[spec.key]);
+      const val = range.parentElement?.querySelector(".gia-look-val");
+      if (val) val.textContent = formatLookValue(spec.key, s[spec.key]);
+    });
+    syncLookUrl();
+  });
+
+  panel.querySelector("#gia-look-copy").addEventListener("click", async () => {
+    const u = new URL(window.location.href);
+    appendShareParams(u, viewer);
+    const link = u.toString();
+    try {
+      await navigator.clipboard.writeText(link);
+      const hint = panel.querySelector("#gia-look-hint");
+      if (hint) {
+        const prev = hint.textContent;
+        hint.textContent = "Copied view link (lighting, background, camera) to clipboard.";
+        setTimeout(() => {
+          hint.textContent = prev;
+        }, 2200);
+      }
+    } catch {
+      window.prompt("Copy this URL:", link);
+    }
+  });
+
+  panel.querySelector("#gia-look-sync-url").addEventListener("change", () => {
+    if (panel.querySelector("#gia-look-sync-url").checked) syncLookUrl();
+  });
 
   const gridEl = top.querySelector("#gia-grid");
   gridEl.addEventListener("change", () => viewer.setGridVisible(gridEl.checked));
@@ -107,6 +304,7 @@ export function mountUi({ modelId, modelBase, viewer }) {
     } catch {
       /* private mode */
     }
+    syncLookUrl();
   });
 
   function wireSection(axis, onId, rangeId) {
@@ -155,7 +353,7 @@ export function mountUi({ modelId, modelBase, viewer }) {
       top.querySelector("#gia-model-label").textContent = label;
       window.dispatchEvent(new Event("gia-model-loaded"));
     } catch (e) {
-      showToast(String(e.message || e));
+      showToast(formatModelLoadError(e));
     } finally {
       showLoading(false);
     }
@@ -173,7 +371,7 @@ export function mountUi({ modelId, modelBase, viewer }) {
     viewer
       .loadFromUrl(objectUrl)
       .then(() => window.dispatchEvent(new Event("gia-model-loaded")))
-      .catch((e) => showToast(String(e.message || e)))
+      .catch((e) => showToast(formatModelLoadError(e)))
       .finally(() => showLoading(false));
   }
 }
