@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 
 /**
  * Stable key for grouping meshes that should share one draw call.
@@ -125,4 +126,83 @@ export function mergeIdenticalMeshesToInstanced(root, options = {}) {
 
   const meshCountAfter = meshCountBefore - drawsSaved;
   return { mergedGroups, meshCountBefore, meshCountAfter };
+}
+
+/**
+ * Merge static meshes that share one material into a single draw call (distinct geometries baked to root space).
+ * Excludes LOD nodes and instanced/skinned/multi-material meshes. Frustum culling is off on merged meshes (scene-spanning bounds).
+ *
+ * @param {THREE.Object3D} root Loaded glTF root (same as instancing).
+ * @returns {number} Number of material groups merged (0 if none)
+ */
+export function mergeByMaterial(root) {
+  root.updateMatrixWorld(true);
+  const invRoot = new THREE.Matrix4().copy(root.matrixWorld).invert();
+  const tmp = new THREE.Matrix4();
+
+  /** @type {Map<string, { material: THREE.Material; meshes: THREE.Mesh[] }>} */
+  const byMaterial = new Map();
+
+  root.traverse((o) => {
+    if (!o.isMesh || o.isInstancedMesh || o.isSkinnedMesh) return;
+    if (o.name?.startsWith("gia_detail") || o.name?.startsWith("gia_hull")) return;
+    if (Array.isArray(o.material)) return;
+    const mat = o.material;
+    if (!mat) return;
+    if (o.geometry?.morphAttributes && Object.keys(o.geometry.morphAttributes).length)
+      return;
+    if (!o.geometry?.attributes?.position) return;
+
+    const key = mat.uuid;
+    let bucket = byMaterial.get(key);
+    if (!bucket) {
+      bucket = { material: mat, meshes: [] };
+      byMaterial.set(key, bucket);
+    }
+    bucket.meshes.push(o);
+  });
+
+  let merged = 0;
+  for (const { material, meshes } of byMaterial.values()) {
+    if (meshes.length < 2) continue;
+
+    const geos = [];
+    for (const m of meshes) {
+      m.updateWorldMatrix(true, false);
+      const g = m.geometry.clone();
+      tmp.copy(invRoot).multiply(m.matrixWorld);
+      g.applyMatrix4(tmp);
+      geos.push(g);
+    }
+
+    const combined = mergeGeometries(geos, false);
+    if (!combined) {
+      geos.forEach((g) => g.dispose());
+      continue;
+    }
+
+    combined.computeBoundingSphere();
+
+    const mergedMesh = new THREE.Mesh(combined, material);
+    mergedMesh.name = `gia-merged-${merged}`;
+    mergedMesh.frustumCulled = false;
+    mergedMesh.castShadow = meshes.some((m) => m.castShadow);
+    mergedMesh.receiveShadow = meshes.some((m) => m.receiveShadow);
+
+    root.add(mergedMesh);
+
+    const disposedGeo = new Set();
+    for (const m of meshes) {
+      const g = m.geometry;
+      m.parent?.remove(m);
+      if (g && !disposedGeo.has(g.uuid)) {
+        disposedGeo.add(g.uuid);
+        g.dispose();
+      }
+    }
+    geos.forEach((g) => g.dispose());
+    merged += 1;
+  }
+
+  return merged;
 }

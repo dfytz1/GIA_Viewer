@@ -8,7 +8,10 @@ import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { SSAOPass } from "three/examples/jsm/postprocessing/SSAOPass.js";
-import { mergeIdenticalMeshesToInstanced } from "./instancing.js";
+import {
+  mergeByMaterial,
+  mergeIdenticalMeshesToInstanced,
+} from "./instancing.js";
 import { collectGiaLodPairs, updateGiaLodVisibility } from "./giaLod.js";
 
 const DRACO_DECODER =
@@ -39,7 +42,6 @@ export class GiaViewer {
       antialias: true,
       alpha: false,
       powerPreference: "high-performance",
-      logarithmicDepthBuffer: true,
     });
     this._targetPixelRatio = Math.min(window.devicePixelRatio, 2);
     this.renderer.setPixelRatio(this._targetPixelRatio);
@@ -1018,8 +1020,8 @@ export class GiaViewer {
   }
 
   /**
-   * After load: GPU instancing for repeated blocks (same geometry+material → one draw).
-   * Disable with URL ?noinst=1
+   * After load: GPU instancing (same geometry+material), then merge remaining meshes by material.
+   * URL ?noinst=1 skips instancing; ?nomerge=1 skips material merge.
    */
   _maybeMergeInstancing(root) {
     const countMeshes = () => {
@@ -1032,20 +1034,49 @@ export class GiaViewer {
 
     if (typeof window === "undefined") {
       const meshCountBefore = countMeshes();
-      return { mergedGroups: 0, meshCountBefore, meshCountAfter: meshCountBefore };
-    }
-    if (new URLSearchParams(window.location.search).has("noinst")) {
-      const meshCountBefore = countMeshes();
-      return { mergedGroups: 0, meshCountBefore, meshCountAfter: meshCountBefore };
+      return {
+        mergedGroups: 0,
+        meshCountBefore,
+        meshCountAfter: meshCountBefore,
+        materialMergedGroups: 0,
+      };
     }
 
-    const stats = mergeIdenticalMeshesToInstanced(root, { minGroupSize: 3 });
-    if (stats.mergedGroups > 0) {
-      console.info(
-        `[GIA] GPU instancing: ${stats.meshCountBefore} mesh draws → ${stats.meshCountAfter} (${stats.mergedGroups} instanced groups; add ?noinst=1 to disable)`,
-      );
+    const sp = new URLSearchParams(window.location.search);
+    const meshCountBefore = countMeshes();
+    let mergedGroups = 0;
+
+    if (!sp.has("noinst")) {
+      const stats = mergeIdenticalMeshesToInstanced(root, { minGroupSize: 3 });
+      mergedGroups = stats.mergedGroups;
+      if (mergedGroups > 0) {
+        console.info(
+          `[GIA] GPU instancing: ${stats.meshCountBefore} mesh draws → ${stats.meshCountAfter} (${mergedGroups} instanced groups; add ?noinst=1 to disable)`,
+        );
+      }
     }
-    return stats;
+
+    root.updateMatrixWorld(true);
+
+    let materialMergedGroups = 0;
+    if (!sp.has("nomerge")) {
+      materialMergedGroups = mergeByMaterial(root);
+      if (materialMergedGroups > 0) {
+        console.info(
+          `[GIA] Merge by material: ${materialMergedGroups} group(s) (?nomerge=1 to disable)`,
+        );
+      }
+    }
+
+    root.updateMatrixWorld(true);
+    const meshCountAfter = countMeshes();
+
+    return {
+      mergedGroups,
+      meshCountBefore,
+      meshCountAfter,
+      materialMergedGroups,
+    };
   }
 
   /**
