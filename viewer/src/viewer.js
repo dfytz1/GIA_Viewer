@@ -1249,7 +1249,9 @@ export class GiaViewer {
               const instStats = await this._maybeMergeInstancing(root);
               this.modelRoot.updateMatrixWorld(true);
               this.modelRoot.traverse((o) => {
-                if (o.isMesh || o.isInstancedMesh) o.frustumCulled = false;
+                if (!o.isMesh && !o.isInstancedMesh) return;
+                if (o.isInstancedMesh) o.computeBoundingSphere();
+                o.frustumCulled = true;
               });
               this._tuneMeshShadowFlags();
               this._rebuildMeshMaterialCache();

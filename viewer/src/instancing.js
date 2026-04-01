@@ -242,7 +242,7 @@ export async function mergeMeshesByMaterialBatch(root, options = {}) {
 
       const mesh = new THREE.Mesh(merged, material);
       mesh.name = `gia-mesh-batch-${batchMeshesCreated}`;
-      mesh.frustumCulled = false;
+      mesh.frustumCulled = true;
       mesh.castShadow = batch.some((m) => m.castShadow);
       mesh.receiveShadow = batch.some((m) => m.receiveShadow);
       mesh.userData.giaBatchSubMeshCount = batch.length;
