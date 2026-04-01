@@ -9,8 +9,8 @@ import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { SSAOPass } from "three/examples/jsm/postprocessing/SSAOPass.js";
 import {
-  mergeByMaterial,
   mergeIdenticalMeshesToInstanced,
+  mergeMeshesByMaterialBatch,
 } from "./instancing.js";
 import { collectGiaLodPairs, updateGiaLodVisibility } from "./giaLod.js";
 
@@ -1050,10 +1050,11 @@ export class GiaViewer {
   }
 
   /**
-   * After load: GPU instancing (same geometry+material), then merge remaining meshes by material.
-   * URL ?noinst=1 skips instancing; ?nomerge=1 skips material merge.
+   * After load: instancing only for large repeated geometry (≥10k verts), then Speckle-style
+   * material batches (mergeGeometries with draw groups, split at 500k verts, async yields).
+   * URL ?noinst=1 skips instancing; ?nomerge=1 skips material batching.
    */
-  _maybeMergeInstancing(root) {
+  async _maybeMergeInstancing(root) {
     const countMeshes = () => {
       let n = 0;
       root.traverse((o) => {
@@ -1081,7 +1082,7 @@ export class GiaViewer {
       mergedGroups = stats.mergedGroups;
       if (mergedGroups > 0) {
         console.info(
-          `[GIA] GPU instancing: ${stats.meshCountBefore} mesh draws → ${stats.meshCountAfter} (${mergedGroups} instanced groups; add ?noinst=1 to disable)`,
+          `[GIA] GPU instancing (geom ≥10k verts): ${stats.meshCountBefore} mesh draws → ${stats.meshCountAfter} (${mergedGroups} groups; ?noinst=1 to disable)`,
         );
       }
     }
@@ -1090,10 +1091,10 @@ export class GiaViewer {
 
     let materialMergedGroups = 0;
     if (!sp.has("nomerge")) {
-      materialMergedGroups = mergeByMaterial(root);
+      materialMergedGroups = await mergeMeshesByMaterialBatch(root);
       if (materialMergedGroups > 0) {
         console.info(
-          `[GIA] Merge by material: ${materialMergedGroups} group(s) (?nomerge=1 to disable)`,
+          `[GIA] MeshBatch by material: ${materialMergedGroups} draw mesh(es) (?nomerge=1 to disable)`,
         );
       }
     }
@@ -1208,22 +1209,28 @@ export class GiaViewer {
           });
 
           this.modelRoot.add(root);
-          const instStats = this._maybeMergeInstancing(root);
-          this.modelRoot.updateMatrixWorld(true);
-          this._tuneMeshShadowFlags();
-          this._rebuildMeshMaterialCache();
-          buildBoundsTreesForModelRoot(this.modelRoot);
-          this._lodPairs = collectGiaLodPairs(this.modelRoot);
-          updateGiaLodVisibility(
-            this._lodPairs,
-            this.camera,
-            this._lodViewportPx(),
-            this.lodDetailMinPx,
-          );
-          this._tuneForHeavyScene(instStats);
-          this._fitCameraToObject(this.modelRoot);
-          this._applyClippingToModel();
-          resolve(gltf);
+          (async () => {
+            try {
+              const instStats = await this._maybeMergeInstancing(root);
+              this.modelRoot.updateMatrixWorld(true);
+              this._tuneMeshShadowFlags();
+              this._rebuildMeshMaterialCache();
+              buildBoundsTreesForModelRoot(this.modelRoot);
+              this._lodPairs = collectGiaLodPairs(this.modelRoot);
+              updateGiaLodVisibility(
+                this._lodPairs,
+                this.camera,
+                this._lodViewportPx(),
+                this.lodDetailMinPx,
+              );
+              this._tuneForHeavyScene(instStats);
+              this._fitCameraToObject(this.modelRoot);
+              this._applyClippingToModel();
+              resolve(gltf);
+            } catch (e) {
+              reject(e);
+            }
+          })();
         },
         undefined,
         (err) => reject(err)

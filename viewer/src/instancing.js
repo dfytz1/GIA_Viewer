@@ -1,6 +1,15 @@
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 
+/** Per-instance geometry must be this large before InstancedMesh pays off (Speckle-style). */
+export const MIN_INSTANCED_BATCH_VERTICES = 10_000;
+
+/** Split material batches so merged vertex buffers stay under this (Speckle-style). */
+export const MAX_BATCH_VERTICES = 500_000;
+
+/** Yield to the event loop every N material buckets processed (AsyncPause-style). */
+export const ASYNC_YIELD_EVERY_MATERIALS = 20;
+
 /**
  * Stable key for grouping meshes that should share one draw call.
  * Uses geometry layout + a light hash of positions (same as GLB duplicates of one block).
@@ -31,31 +40,38 @@ function bucketKey(mesh) {
   return `${geometrySignature(mesh.geometry)}#${materialKey(mesh.material)}`;
 }
 
+function meshPositionVertexCount(mesh) {
+  const g = mesh.geometry;
+  if (!g?.attributes?.position) return 0;
+  return g.attributes.position.count;
+}
+
+function isEligibleMesh(o) {
+  if (!o.isMesh || o.isInstancedMesh || o.isSkinnedMesh) return false;
+  if (o.name?.startsWith("gia_detail") || o.name?.startsWith("gia_hull")) return false;
+  if (o.geometry?.morphAttributes && Object.keys(o.geometry.morphAttributes).length)
+    return false;
+  if (Array.isArray(o.material)) return false;
+  if (!o.material || !o.geometry?.attributes?.position) return false;
+  return true;
+}
+
 /**
- * Collapse many identical Mesh draw calls into InstancedMesh (same geometry+material).
- * Matrices are converted to be local to `root` (the loaded glTF root group).
+ * Collapse identical geometry+material into InstancedMesh only when the shared geometry is large enough.
+ * Matrices are relative to `root` (same as before).
  *
  * @param {THREE.Object3D} root
- * @param {{ minGroupSize?: number }} [options]
- * @returns {{ mergedGroups: number, meshCountBefore: number, meshCountAfter: number }}
+ * @param {{ minGroupSize?: number; minVertices?: number }} [options]
  */
 export function mergeIdenticalMeshesToInstanced(root, options = {}) {
   const minGroupSize = options.minGroupSize ?? 2;
+  const minVertices = options.minVertices ?? MIN_INSTANCED_BATCH_VERTICES;
 
   /** @type {THREE.Mesh[]} */
   const meshes = [];
   root.updateMatrixWorld(true);
   root.traverse((o) => {
-    if (!o.isMesh || o.isInstancedMesh) return;
-    if (o.isSkinnedMesh) return;
-    if (
-      o.name?.startsWith("gia_detail") ||
-      o.name?.startsWith("gia_hull")
-    )
-      return;
-    if (o.geometry?.morphAttributes && Object.keys(o.geometry.morphAttributes).length)
-      return;
-    if (Array.isArray(o.material)) return;
+    if (!isEligibleMesh(o)) return;
     meshes.push(o);
   });
 
@@ -88,6 +104,9 @@ export function mergeIdenticalMeshesToInstanced(root, options = {}) {
     const geometry = template.geometry;
     const material = template.material;
     if (!geometry || !material) continue;
+
+    const vertCount = geometry.attributes.position.count;
+    if (vertCount < minVertices) continue;
 
     const count = group.length;
     const instanced = new THREE.InstancedMesh(geometry, material, count);
@@ -128,14 +147,24 @@ export function mergeIdenticalMeshesToInstanced(root, options = {}) {
   return { mergedGroups, meshCountBefore, meshCountAfter };
 }
 
+/** Force single-material draw groups after mergeGeometries(..., true). */
+function normalizeBatchMaterialIndex(geometry) {
+  if (!geometry.groups?.length) return;
+  for (const grp of geometry.groups) {
+    grp.materialIndex = 0;
+  }
+}
+
 /**
- * Merge static meshes that share one material into a single draw call (distinct geometries baked to root space).
- * Excludes LOD nodes and instanced/skinned/multi-material meshes. Frustum culling is off on merged meshes (scene-spanning bounds).
+ * Speckle-style MeshBatch: one BufferGeometry per material (optionally split at MAX_BATCH_VERTICES),
+ * with mergeGeometries(..., true) so each source mesh keeps a draw range (future per-object visibility).
  *
- * @param {THREE.Object3D} root Loaded glTF root (same as instancing).
- * @returns {number} Number of material groups merged (0 if none)
+ * @param {THREE.Object3D} root
+ * @param {{ onProgress?: (done: number, totalMaterials: number) => void }} [options]
+ * @returns {Promise<number>} Number of batch meshes created
  */
-export function mergeByMaterial(root) {
+export async function mergeMeshesByMaterialBatch(root, options = {}) {
+  const onProgress = options.onProgress;
   root.updateMatrixWorld(true);
   const invRoot = new THREE.Matrix4().copy(root.matrixWorld).invert();
   const tmp = new THREE.Matrix4();
@@ -144,15 +173,8 @@ export function mergeByMaterial(root) {
   const byMaterial = new Map();
 
   root.traverse((o) => {
-    if (!o.isMesh || o.isInstancedMesh || o.isSkinnedMesh) return;
-    if (o.name?.startsWith("gia_detail") || o.name?.startsWith("gia_hull")) return;
-    if (Array.isArray(o.material)) return;
+    if (!isEligibleMesh(o)) return;
     const mat = o.material;
-    if (!mat) return;
-    if (o.geometry?.morphAttributes && Object.keys(o.geometry.morphAttributes).length)
-      return;
-    if (!o.geometry?.attributes?.position) return;
-
     const key = mat.uuid;
     let bucket = byMaterial.get(key);
     if (!bucket) {
@@ -162,47 +184,89 @@ export function mergeByMaterial(root) {
     bucket.meshes.push(o);
   });
 
-  let merged = 0;
-  for (const { material, meshes } of byMaterial.values()) {
-    if (meshes.length < 2) continue;
+  const totalMaterials = byMaterial.size;
+  let processedMaterials = 0;
+  let batchMeshesCreated = 0;
 
-    const geos = [];
-    for (const m of meshes) {
-      m.updateWorldMatrix(true, false);
-      const g = m.geometry.clone();
-      tmp.copy(invRoot).multiply(m.matrixWorld);
-      g.applyMatrix4(tmp);
-      geos.push(g);
+  for (const { material, meshes } of byMaterial.values()) {
+    if (processedMaterials > 0 && processedMaterials % ASYNC_YIELD_EVERY_MATERIALS === 0) {
+      await new Promise((r) => setTimeout(r, 0));
     }
 
-    const combined = mergeGeometries(geos, false);
-    if (!combined) {
-      geos.forEach((g) => g.dispose());
+    if (meshes.length < 2) {
+      processedMaterials++;
+      onProgress?.(processedMaterials, totalMaterials);
       continue;
     }
 
-    combined.computeBoundingSphere();
-
-    const mergedMesh = new THREE.Mesh(combined, material);
-    mergedMesh.name = `gia-merged-${merged}`;
-    mergedMesh.frustumCulled = false;
-    mergedMesh.castShadow = meshes.some((m) => m.castShadow);
-    mergedMesh.receiveShadow = meshes.some((m) => m.receiveShadow);
-
-    root.add(mergedMesh);
-
-    const disposedGeo = new Set();
+    /** @type {THREE.Mesh[][]} */
+    const subBatches = [];
+    let cur = [];
+    let curVerts = 0;
     for (const m of meshes) {
-      const g = m.geometry;
-      m.parent?.remove(m);
-      if (g && !disposedGeo.has(g.uuid)) {
-        disposedGeo.add(g.uuid);
-        g.dispose();
+      const v = meshPositionVertexCount(m);
+      if (cur.length > 0 && curVerts + v > MAX_BATCH_VERTICES) {
+        subBatches.push(cur);
+        cur = [];
+        curVerts = 0;
       }
+      cur.push(m);
+      curVerts += v;
     }
-    geos.forEach((g) => g.dispose());
-    merged += 1;
+    if (cur.length) subBatches.push(cur);
+
+    for (const batch of subBatches) {
+      if (batch.length < 2) continue;
+
+      const geos = [];
+      for (const m of batch) {
+        m.updateWorldMatrix(true, false);
+        const g = m.geometry.clone();
+        tmp.copy(invRoot).multiply(m.matrixWorld);
+        g.applyMatrix4(tmp);
+        geos.push(g);
+      }
+
+      const merged = mergeGeometries(geos, true);
+      if (!merged) {
+        geos.forEach((g) => g.dispose());
+        continue;
+      }
+
+      normalizeBatchMaterialIndex(merged);
+      merged.computeBoundingSphere();
+
+      const mesh = new THREE.Mesh(merged, material);
+      mesh.name = `gia-mesh-batch-${batchMeshesCreated}`;
+      mesh.frustumCulled = false;
+      mesh.castShadow = batch.some((m) => m.castShadow);
+      mesh.receiveShadow = batch.some((m) => m.receiveShadow);
+      mesh.userData.giaBatchSubMeshCount = batch.length;
+      /** Aligns with `geometry.groups` after merge (Speckle-style per-object draw ranges). */
+      mesh.userData.giaBatchEntries = batch.map((m, i) => ({
+        sourceUuid: m.uuid,
+        start: merged.groups[i].start,
+        count: merged.groups[i].count,
+      }));
+
+      root.add(mesh);
+
+      const disposedGeo = new Set();
+      for (const m of batch) {
+        const g = m.geometry;
+        m.parent?.remove(m);
+        if (g && !disposedGeo.has(g.uuid)) {
+          disposedGeo.add(g.uuid);
+          g.dispose();
+        }
+      }
+      geos.forEach((g) => g.dispose());
+      batchMeshesCreated++;
+    }
+
+    processedMaterials++;
+    onProgress?.(processedMaterials, totalMaterials);
   }
 
-  return merged;
+  return batchMeshesCreated;
 }
