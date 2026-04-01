@@ -87,7 +87,9 @@ export function collectGiaLodPairs(root) {
   });
   for (const { detail, hull } of pairs) {
     detail.visible = true;
+    detail.frustumCulled = true;
     hull.visible = false;
+    hull.frustumCulled = true;
   }
   return pairs;
 }

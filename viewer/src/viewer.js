@@ -41,7 +41,8 @@ export class GiaViewer {
       powerPreference: "high-performance",
       logarithmicDepthBuffer: true,
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this._targetPixelRatio = Math.min(window.devicePixelRatio, 2);
+    this.renderer.setPixelRatio(this._targetPixelRatio);
     this.renderer.setSize(w, h);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -58,8 +59,7 @@ export class GiaViewer {
     this._needsRender = true;
     this._shadowInvMatrix = new THREE.Matrix4();
     this._shadowCornerScratch = new THREE.Vector3();
-    this._orbitWasMoving = false;
-    /** After orbit stops, defer SSAO (composer) this many more frames to avoid stutter. */
+    /** After orbit / damping stops, count down before SSAO composer runs again. */
     this._ssaoResumeFrames = 0;
     /** @type {{ detail: import("three").Mesh; hull: import("three").Mesh; pivot: import("three").Object3D }[]} */
     this._lodPairs = [];
@@ -69,6 +69,7 @@ export class GiaViewer {
      */
     this.lodDetailMinPx = null;
     this._shadowOrbitSuspended = false;
+    this._orbitLowPixelRatio = false;
     this._shadowMetricScale = new THREE.Vector3();
     this._shadowSceneSize = new THREE.Vector3();
     this._instShadowBox = new THREE.Box3();
@@ -78,22 +79,34 @@ export class GiaViewer {
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
-    this.controls.dampingFactor = 0.06;
+    this.controls.dampingFactor = 0.15;
     this.controls.screenSpacePanning = true;
     this.controls.minDistance = 0.1;
     this.controls.maxDistance = 1e6;
     this.controls.enableDblClickZoom = false;
     // Do not call _syncCameraFrustum on every change — varying projection every frame causes harsh flicker.
     this.controls.addEventListener("start", () => {
-      if (this._shadowOrbitSuspended) return;
-      this._shadowOrbitSuspended = true;
-      this.renderer.shadowMap.enabled = false;
+      if (!this._shadowOrbitSuspended) {
+        this._shadowOrbitSuspended = true;
+        this.renderer.shadowMap.enabled = false;
+      }
+      if (!this._orbitLowPixelRatio) {
+        this._orbitLowPixelRatio = true;
+        this.renderer.setPixelRatio(1);
+        this._syncDrawBuffersFromContainer();
+      }
       this._invalidateRender();
     });
     this.controls.addEventListener("end", () => {
-      if (!this._shadowOrbitSuspended) return;
-      this._shadowOrbitSuspended = false;
-      this.renderer.shadowMap.enabled = true;
+      if (this._shadowOrbitSuspended) {
+        this._shadowOrbitSuspended = false;
+        this.renderer.shadowMap.enabled = true;
+      }
+      if (this._orbitLowPixelRatio) {
+        this._orbitLowPixelRatio = false;
+        this.renderer.setPixelRatio(this._targetPixelRatio);
+        this._syncDrawBuffersFromContainer();
+      }
       this._invalidateRender();
     });
 
@@ -147,10 +160,13 @@ export class GiaViewer {
     this.modelRoot.name = "ModelRoot";
     this.scene.add(this.modelRoot);
 
+    this._clipPlaneX = new THREE.Plane(new THREE.Vector3(-1, 0, 0), 0);
+    this._clipPlaneY = new THREE.Plane(new THREE.Vector3(0, -1, 0), 0);
+    this._clipPlaneZ = new THREE.Plane(new THREE.Vector3(0, 0, -1), 0);
     this.clippingPlanes = {
-      x: null,
-      y: null,
-      z: null,
+      x: this._clipPlaneX,
+      y: this._clipPlaneY,
+      z: this._clipPlaneZ,
     };
 
     this._clipEnabled = { x: false, y: false, z: false };
@@ -580,7 +596,12 @@ export class GiaViewer {
     this.camera.updateProjectionMatrix();
   }
 
-  _onResize() {
+  _targetPixelRatioFromWindow() {
+    return Math.min(window.devicePixelRatio, 2);
+  }
+
+  /** Resize drawing buffers and composer/SSAO to match the container (and current pixel ratio). */
+  _syncDrawBuffersFromContainer() {
     const w = this.container.clientWidth || window.innerWidth;
     const h = this.container.clientHeight || window.innerHeight;
     this.camera.aspect = w / h;
@@ -588,26 +609,34 @@ export class GiaViewer {
     this.renderer.setSize(w, h);
     this.composer.setSize(w, h);
     this.ssaoPass.setSize(w, h);
+  }
+
+  _onResize() {
+    this._targetPixelRatio = this._targetPixelRatioFromWindow();
+    if (!this._orbitLowPixelRatio) {
+      this.renderer.setPixelRatio(this._targetPixelRatio);
+    }
+    this._syncDrawBuffersFromContainer();
     this._invalidateRender();
   }
 
   _animate() {
     requestAnimationFrame(this._animate);
     const moved = this.controls.update();
+    const ssaoCoolingBefore = this._ssaoResumeFrames > 0;
     if (moved) {
-      this._ssaoResumeFrames = 0;
-    } else if (this.useSsao && this._orbitWasMoving && !moved) {
-      this._ssaoResumeFrames = 3;
-    }
-    if (this._ssaoResumeFrames > 0) {
+      this._ssaoResumeFrames = 8;
+    } else if (this._ssaoResumeFrames > 0) {
       this._ssaoResumeFrames--;
     }
     const runSsao = this.useSsao && this._ssaoResumeFrames === 0;
-
-    if (this.useSsao && this._orbitWasMoving && !moved) {
-      this._needsRender = true;
+    if (
+      this.useSsao &&
+      (this._ssaoResumeFrames > 0 ||
+        (ssaoCoolingBefore && this._ssaoResumeFrames === 0))
+    ) {
+      this._invalidateRender();
     }
-    this._orbitWasMoving = moved;
 
     if (
       this._lodPairs.length > 0 &&
@@ -625,7 +654,7 @@ export class GiaViewer {
     }
 
     if (moved || this._needsRender) {
-      if (this.useSsao && moved) {
+      if (this.useSsao && (moved || this._ssaoResumeFrames > 0)) {
         this.renderer.render(this.scene, this.camera);
       } else if (runSsao) {
         this.composer.render();
@@ -699,9 +728,9 @@ export class GiaViewer {
     const py = THREE.MathUtils.clamp(this._clipPos.y, min.y, max.y);
     const pz = THREE.MathUtils.clamp(this._clipPos.z, min.z, max.z);
 
-    this.clippingPlanes.x = new THREE.Plane(new THREE.Vector3(-1, 0, 0), px);
-    this.clippingPlanes.y = new THREE.Plane(new THREE.Vector3(0, -1, 0), py);
-    this.clippingPlanes.z = new THREE.Plane(new THREE.Vector3(0, 0, -1), pz);
+    this._clipPlaneX.constant = px;
+    this._clipPlaneY.constant = py;
+    this._clipPlaneZ.constant = pz;
 
     this._applyClippingToModel();
   }

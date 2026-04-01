@@ -102,6 +102,7 @@ export function mergeIdenticalMeshesToInstanced(root, options = {}) {
       instanced.setMatrixAt(i, tmp);
     }
     instanced.instanceMatrix.needsUpdate = true;
+    instanced.computeBoundingSphere();
 
     for (const m of group) {
       m.parent?.remove(m);
