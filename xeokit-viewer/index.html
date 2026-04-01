@@ -8,8 +8,33 @@
   <body>
     <div id="app">
       <header class="bar">
-        <span class="title">GIA · xeokit</span>
-        <span id="model-label" class="label">No model</span>
+        <div class="bar-top">
+          <span class="title">GIA · xeokit</span>
+          <span id="model-label" class="label">No model</span>
+        </div>
+        <div class="bar-controls">
+          <label class="ctl">
+            <input id="xeo-ground" type="checkbox" />
+            <span>Ground plane</span>
+          </label>
+          <div class="ctl bg-ctl">
+            <button type="button" id="xeo-bg-btn" class="bg-btn" aria-label="Choose background color" title="Background color">
+              <span id="xeo-bg-swatch" class="swatch" aria-hidden="true"></span>
+              Background
+            </button>
+            <input id="xeo-bg-color" type="color" class="visually-hidden" title="Background" />
+          </div>
+        </div>
+        <div class="bar-url">
+          <input
+            id="xeo-url"
+            type="url"
+            class="url-input"
+            placeholder="https://…/model.glb"
+            spellcheck="false"
+          />
+          <button type="button" id="xeo-load" class="load-btn">Load</button>
+        </div>
       </header>
       <canvas id="xeokit-canvas"></canvas>
     </div>

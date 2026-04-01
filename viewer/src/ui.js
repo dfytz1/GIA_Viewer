@@ -67,7 +67,6 @@ function appendShareParams(u, viewer) {
   }
   u.searchParams.delete("lodm");
   u.searchParams.delete("lodpx");
-  u.searchParams.delete("gp");
   for (const [k, v] of GiaViewer.sceneViewToUrlEntries(viewer)) {
     u.searchParams.set(k, v);
   }
@@ -108,23 +107,6 @@ export function mountUi({ modelId, modelBase, viewer }) {
   panel.className =
     "pointer-events-auto fixed bottom-0 left-0 z-10 m-3 max-w-[min(100%-24px,380px)] rounded-xl border border-gia-border bg-gia-panel p-4 shadow-xl backdrop-blur-md sm:m-4";
   panel.innerHTML = `
-    <div class="mb-3 rounded-xl border border-gia-border bg-black/30 p-3 shadow-inner">
-      <div class="mb-2 text-xs font-semibold uppercase tracking-wider text-white">Scene</div>
-      <label class="mb-3 flex cursor-pointer items-center gap-2.5 text-sm text-white">
-        <input id="gia-ground" type="checkbox" class="h-4 w-4 shrink-0 accent-gia-accent" />
-        <span>Use ground plane</span>
-      </label>
-      <div class="space-y-2">
-        <div class="text-xs font-medium text-gia-muted">Background color</div>
-        <div class="flex flex-wrap items-stretch gap-2">
-          <input id="gia-bg-color" type="color" class="min-h-[2.5rem] min-w-[5.5rem] flex-1 cursor-pointer rounded-lg border-2 border-gia-border bg-black/40 p-1 sm:max-w-[9rem]" title="Scene background" />
-          <button type="button" id="gia-bg-btn" class="rounded-lg border border-gia-border bg-gia-accent/90 px-3 py-2 text-xs font-semibold text-white hover:brightness-110" title="Open system color picker" aria-label="Choose background color">
-            Choose color
-          </button>
-        </div>
-        <p class="text-[10px] leading-snug text-gia-muted">Ground + color sync to the URL when “Sync look” is on (<span class="font-mono">gp</span>, <span class="font-mono">bg</span>).</p>
-      </div>
-    </div>
     <details class="group rounded-lg border border-white/10 bg-black/20">
       <summary class="cursor-pointer select-none list-none px-2 py-2.5 text-xs font-semibold uppercase tracking-wider text-gia-muted marker:content-none hover:text-white [&::-webkit-details-marker]:hidden">
         <span class="inline-block w-4 origin-center text-gia-muted transition-transform group-open:rotate-90">▸</span>
@@ -164,17 +146,10 @@ export function mountUi({ modelId, modelBase, viewer }) {
           <button type="button" id="gia-look-copy" class="rounded-lg border border-gia-border bg-black/30 px-2.5 py-1.5 text-xs text-gia-muted hover:border-white/25 hover:text-white">Copy view link</button>
         </div>
         <p id="gia-look-hint" class="mt-2 text-[10px] leading-snug text-gia-muted/90">
-          Link includes lighting (<span class="font-mono">exp</span>, …), <span class="font-mono">bg</span>, <span class="font-mono">gp</span> (ground), camera <span class="font-mono">cx</span>–<span class="font-mono">cz</span>, target <span class="font-mono">tx</span>–<span class="font-mono">tz</span>, <span class="font-mono">lodpx</span>, <span class="font-mono">ssao</span>
+          Link includes lighting (<span class="font-mono">exp</span>, …), <span class="font-mono">bg</span>, camera <span class="font-mono">cx</span>–<span class="font-mono">cz</span>, target <span class="font-mono">tx</span>–<span class="font-mono">tz</span>, <span class="font-mono">lodpx</span>, <span class="font-mono">ssao</span>
         </p>
       </div>
     </details>
-    <div class="mt-4 border-t border-gia-border pt-3">
-      <div class="mb-2 text-xs font-semibold uppercase tracking-wider text-gia-muted">Open GLB URL</div>
-      <div class="flex gap-2">
-        <input id="gia-url" type="url" placeholder="https://…/model.glb" class="min-w-0 flex-1 rounded-lg border border-gia-border bg-black/30 px-2 py-1.5 text-xs text-white placeholder:text-gia-muted focus:border-gia-accent focus:outline-none" />
-        <button id="gia-load" type="button" class="rounded-lg bg-gia-accent px-3 py-1.5 text-xs font-semibold text-white hover:brightness-110">Load</button>
-      </div>
-    </div>
   `;
   app.appendChild(panel);
 
@@ -314,13 +289,6 @@ export function mountUi({ modelId, modelBase, viewer }) {
   const gridEl = top.querySelector("#gia-grid");
   gridEl.addEventListener("change", () => viewer.setGridVisible(gridEl.checked));
 
-  const groundEl = panel.querySelector("#gia-ground");
-  groundEl.checked = viewer.getGroundPlaneVisible();
-  groundEl.addEventListener("change", () => {
-    viewer.setGroundPlaneVisible(groundEl.checked);
-    syncLookUrl();
-  });
-
   const lodpxEl = top.querySelector("#gia-lodpx");
   function syncLodFieldFromViewer() {
     const v = viewer.getLodDetailMinPx();
@@ -353,24 +321,6 @@ export function mountUi({ modelId, modelBase, viewer }) {
       applyLodFromInput();
       syncLookUrl();
     }
-  });
-
-  const bgColorEl = panel.querySelector("#gia-bg-color");
-  const bgBtn = panel.querySelector("#gia-bg-btn");
-  function syncBgFromViewer() {
-    bgColorEl.value = viewer.getBackgroundColorHex();
-  }
-  syncBgFromViewer();
-  bgBtn.addEventListener("click", () => bgColorEl.click());
-  bgColorEl.addEventListener("input", () => {
-    const v = bgColorEl.value;
-    viewer.setBackgroundColor(v);
-    try {
-      localStorage.setItem("gia-bg", v);
-    } catch {
-      /* private mode */
-    }
-    syncLookUrl();
   });
 
   function wireSection(axis, onId, rangeId) {
@@ -409,25 +359,9 @@ export function mountUi({ modelId, modelBase, viewer }) {
     uz();
   });
 
-  panel.querySelector("#gia-load").addEventListener("click", async () => {
-    const url = panel.querySelector("#gia-url").value.trim();
-    if (!url) return;
-    showLoading(true);
-    try {
-      await viewer.loadFromUrl(url);
-      const label = url.split("/").pop() || url;
-      top.querySelector("#gia-model-label").textContent = label;
-      window.dispatchEvent(new Event("gia-model-loaded"));
-    } catch (e) {
-      showToast(formatModelLoadError(e));
-    } finally {
-      showLoading(false);
-    }
-  });
-
   if (modelId && !modelBase) {
     showToast(
-      "VITE_R2_PUBLIC_BASE_URL was not set at build time. Use “Open GLB URL” or rebuild with env."
+      "VITE_R2_PUBLIC_BASE_URL was not set at build time. Rebuild with env or open the model via the xeokit viewer / ?url=."
     );
   }
 

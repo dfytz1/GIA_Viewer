@@ -22,8 +22,6 @@ const storedBg = localStorage.getItem("gia-bg");
 if (bgParam) viewer.setBackgroundColor(bgParam);
 else if (storedBg) viewer.setBackgroundColor(storedBg);
 
-if (params.get("gp") === "1") viewer.setGroundPlaneVisible(true);
-
 const lodpxParam = params.get("lodpx");
 if (lodpxParam != null && lodpxParam !== "") {
   const l = parseFloat(lodpxParam);
