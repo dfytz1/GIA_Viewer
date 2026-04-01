@@ -16,20 +16,25 @@ namespace GIAViewer.Helpers
     /// <summary>
     /// Writes vertex positions in Rhino document units (no automatic conversion to glTF meters).
     /// The viewer interprets scene distances in the same numeric space as the exported coordinates.
+    /// Use <paramref name="geometryScale"/> to shrink large unit systems (e.g. 0.001 for mm) so web viewers keep sane clip ranges.
     /// </summary>
     internal static class GlbExporter
     {
         public static void Export(
             string path,
             Dictionary<string, GiaMeshDefinition> meshById,
-            IReadOnlyList<(string meshId, Matrix4x4 matrix)> placements)
+            IReadOnlyList<(string meshId, Matrix4x4 matrix)> placements,
+            float geometryScale = 1f)
         {
             if (meshById.Count == 0)
                 throw new InvalidOperationException("No mesh definitions to export.");
             if (placements == null || placements.Count == 0)
                 throw new InvalidOperationException("No placements.");
+            if (geometryScale <= 0f || float.IsNaN(geometryScale) || float.IsInfinity(geometryScale))
+                throw new InvalidOperationException("Geometry scale must be a positive finite number.");
 
             var scene = new SceneBuilder();
+            var scaleMatrix = geometryScale == 1f ? (Matrix4x4?)null : Matrix4x4.CreateScale(geometryScale);
 
             Dictionary<string, MeshBuilder<VertexPositionNormal, VertexEmpty, VertexEmpty>> meshBuilders;
 
@@ -72,10 +77,13 @@ namespace GIAViewer.Helpers
             {
                 if (!meshBuilders.TryGetValue(meshId, out var mb))
                     continue;
+                var worldMatrix = scaleMatrix.HasValue
+                    ? Matrix4x4.Multiply(scaleMatrix.Value, matrix)
+                    : matrix;
                 if (hullBuilders != null && hullBuilders.TryGetValue(meshId, out var hullMb))
                 {
                     var root = new NodeBuilder("gia_lod");
-                    root.LocalMatrix = matrix;
+                    root.LocalMatrix = worldMatrix;
                     var nodeDetail = root.CreateNode("gia_detail");
                     var nodeHull = root.CreateNode("gia_hull");
                     scene.AddRigidMesh(mb, nodeDetail);
@@ -84,7 +92,7 @@ namespace GIAViewer.Helpers
                 }
                 else
                 {
-                    scene.AddRigidMesh(mb, matrix);
+                    scene.AddRigidMesh(mb, worldMatrix);
                 }
             }
 

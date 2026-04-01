@@ -122,10 +122,7 @@ export function mergeIdenticalMeshesToInstanced(root, options = {}) {
       instanced.setMatrixAt(i, tmp);
     }
     instanced.instanceMatrix.needsUpdate = true;
-    instanced.geometry.computeBoundingBox();
-    instanced.geometry.computeBoundingSphere();
     instanced.computeBoundingSphere();
-    instanced.computeBoundingBox();
 
     for (const m of group) {
       m.parent?.remove(m);
@@ -237,12 +234,11 @@ export async function mergeMeshesByMaterialBatch(root, options = {}) {
       }
 
       normalizeBatchMaterialIndex(merged);
-      merged.computeBoundingBox();
       merged.computeBoundingSphere();
 
       const mesh = new THREE.Mesh(merged, material);
       mesh.name = `gia-mesh-batch-${batchMeshesCreated}`;
-      mesh.frustumCulled = true;
+      mesh.frustumCulled = false;
       mesh.castShadow = batch.some((m) => m.castShadow);
       mesh.receiveShadow = batch.some((m) => m.receiveShadow);
       mesh.userData.giaBatchSubMeshCount = batch.length;

@@ -14,9 +14,10 @@ namespace GIAViewer.Helpers
         public static void ExportGlb(
             string path,
             Dictionary<string, GiaMeshDefinition> meshById,
-            IReadOnlyList<(string meshId, Matrix4x4 matrix)> placements)
+            IReadOnlyList<(string meshId, Matrix4x4 matrix)> placements,
+            float geometryScale = 1f)
         {
-            GlbExporter.Export(path, meshById, placements);
+            GlbExporter.Export(path, meshById, placements, geometryScale);
         }
     }
 }

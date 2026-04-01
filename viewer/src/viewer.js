@@ -17,15 +17,6 @@ import { collectGiaLodPairs, updateGiaLodVisibility } from "./giaLod.js";
 const DRACO_DECODER =
   "https://www.gstatic.com/draco/versioned/decoders/1.5.6/";
 
-/** Matches @xeokit/xeokit-sdk `Perspective.js` defaults (fov 60, near 0.1, far 10000). Far still grows with scene bounds. */
-export const CAMERA_DEFAULTS = Object.freeze({
-  fov: 60,
-  near: 0.1,
-  far: 10000,
-  /** Minimum perspective near while a model is loaded (xeokit default near). */
-  nearFloor: 0.1,
-});
-
 /** Defaults and URL keys for lighting / tone / SSAO tuning (see ui panel + query string). */
 export const LOOK_DEFAULTS = Object.freeze({
   toneMappingExposure: 1.05,
@@ -85,12 +76,7 @@ export class GiaViewer {
     this._shadowSceneSize = new THREE.Vector3();
     this._instShadowBox = new THREE.Box3();
 
-    this.camera = new THREE.PerspectiveCamera(
-      CAMERA_DEFAULTS.fov,
-      w / h,
-      CAMERA_DEFAULTS.near,
-      CAMERA_DEFAULTS.far,
-    );
+    this.camera = new THREE.PerspectiveCamera(45, w / h, 0.01, 1e7);
     this.camera.position.set(12, 8, 12);
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -100,10 +86,15 @@ export class GiaViewer {
     this.controls.minDistance = 0.1;
     this.controls.maxDistance = 1e6;
     this.controls.enableDblClickZoom = false;
-    // During orbit: sync `near` from view; keep `far` past farthest bbox corner with a scene-diagonal floor.
+    // Full frustum sync on fit/focus; while orbiting we expand `far` when needed and tighten `near` from camera–bounds distance.
     this.controls.addEventListener("change", () => {
-      this._syncCameraNearFromBounds();
+      const prevFar = this.camera.far;
       this._expandCameraFarIfNeeded();
+      const prevNear = this.camera.near;
+      this._recomputeCameraNearFromBounds();
+      if (this.camera.far !== prevFar || this.camera.near !== prevNear) {
+        this.camera.updateProjectionMatrix();
+      }
     });
     this.controls.addEventListener("start", () => {
       if (!this._shadowOrbitSuspended) {
@@ -567,44 +558,17 @@ export class GiaViewer {
   }
 
   /**
-   * Perspective near: scale lightly with model size (depth precision) and with camera–target
-   * distance so zoom-in stays usable (tiny fraction of view distance, not a large fraction).
-   */
-  _syncCameraNearFromBounds() {
-    if (this._bounds.isEmpty()) {
-      this.camera.near = CAMERA_DEFAULTS.near;
-      this.camera.updateProjectionMatrix();
-      return;
-    }
-    const { min, max } = this._bounds;
-    const sx = max.x - min.x;
-    const sy = max.y - min.y;
-    const sz = max.z - min.z;
-    const modelDiag = Math.sqrt(sx * sx + sy * sy + sz * sz);
-    const floor = CAMERA_DEFAULTS.nearFloor;
-
-    const nearFromModel = Math.max(floor, modelDiag * 0.0001);
-
-    const distTarget = this.camera.position.distanceTo(this.controls.target);
-    const nearFromView = Math.max(floor, distTarget * 0.002);
-
-    this.camera.near = Math.min(nearFromModel, nearFromView);
-    this.camera.updateProjectionMatrix();
-  }
-
-  /**
    * Near/far for the loaded model. Call when the camera is placed (fit, URL view, double-click focus).
-   * `near` is the smaller of a model-size term and a small fraction of camera–target distance; `far` uses bbox + max dolly.
-   * While orbiting, {@link _syncCameraNearFromBounds} and {@link _expandCameraFarIfNeeded} run on each change.
+   * `far` uses bbox + max dolly. `near` uses model size, distance to the bounds hull, and a far/near ratio cap;
+   * while orbiting, {@link _recomputeCameraNearFromBounds} keeps `near` low when zoomed in (reduces clipping).
    */
   _syncCameraFrustum() {
     if (this._bounds.isEmpty()) {
-      this.camera.near = CAMERA_DEFAULTS.near;
-      this.camera.far = CAMERA_DEFAULTS.far;
+      this.camera.near = 0.01;
+      this.camera.far = 1e5;
       this.camera.updateProjectionMatrix();
       return;
     }
-    this._syncCameraNearFromBounds();
     const { min, max } = this._bounds;
     const corners = this._bboxCorners;
     corners[0].set(min.x, min.y, min.z);
@@ -637,18 +601,47 @@ export class GiaViewer {
     far = Math.max(far, maxDist * 2.75, modelDiag * 6, 500);
     far = Math.min(far, 2e6);
     this.camera.far = far;
+    this._recomputeCameraNearFromBounds();
     this.camera.updateProjectionMatrix();
   }
 
   /**
-   * OrbitControls `change`: keep `far` beyond the farthest bbox corner from the camera, with a floor from
-   * full scene diagonal so `far` never drops below what separated groups need (avoids far clipping when orbiting).
+   * Perspective `near` from model diagonal, distance to the AABB hull, and a soft far/near ratio limit.
+   * When the camera moves close to the model, `near` drops so the front of the mesh is not clipped.
+   */
+  _recomputeCameraNearFromBounds() {
+    if (this._bounds.isEmpty()) {
+      this.camera.near = 0.01;
+      return;
+    }
+    const { min, max } = this._bounds;
+    const sx = max.x - min.x;
+    const sy = max.y - min.y;
+    const sz = max.z - min.z;
+    const modelDiag = Math.sqrt(sx * sx + sy * sy + sz * sz);
+
+    const minNear = 0.001;
+    const dSurf = this._bounds.distanceToPoint(this.camera.position);
+    const proximityNear = dSurf > 1e-9 ? dSurf * 0.12 : minNear;
+    const modelCap = Math.max(minNear, modelDiag * 2e-5);
+    const far = Math.max(this.camera.far, 1);
+    const ratioCap = Math.max(minNear, far / 1e6);
+
+    this.camera.near = Math.max(
+      minNear,
+      Math.min(proximityNear, modelCap, ratioCap),
+    );
+  }
+
+  /**
+   * OrbitControls `change`: grow `far` only when the camera needs more depth range (no shrink — avoids flicker).
    */
   _expandCameraFarIfNeeded() {
     if (this._bounds.isEmpty()) return;
     const cp = this.camera.position;
-    const { min, max } = this._bounds;
+    const t = this.controls.target;
     const c = this._bboxCorners;
+    const { min, max } = this._bounds;
     c[0].set(min.x, min.y, min.z);
     c[1].set(max.x, min.y, min.z);
     c[2].set(min.x, max.y, min.z);
@@ -657,23 +650,14 @@ export class GiaViewer {
     c[5].set(max.x, min.y, max.z);
     c[6].set(min.x, max.y, max.z);
     c[7].set(max.x, max.y, max.z);
-
-    let maxDist = 0;
+    let maxDist = cp.distanceTo(t);
     for (let i = 0; i < 8; i++) {
       maxDist = Math.max(maxDist, cp.distanceTo(c[i]));
     }
     maxDist = Math.max(maxDist, 1);
-
-    const sx = max.x - min.x;
-    const sy = max.y - min.y;
-    const sz = max.z - min.z;
-    const modelDiag = Math.sqrt(sx * sx + sy * sy + sz * sz);
-
-    const needed = Math.max(maxDist * 2.75, modelDiag * 3, 500);
-    const newFar = Math.min(needed, 2e6);
-    if (Math.abs(newFar - this.camera.far) / this.camera.far > 0.02) {
-      this.camera.far = newFar;
-      this.camera.updateProjectionMatrix();
+    const needed = Math.max(maxDist * 3, this.camera.far);
+    if (needed > this.camera.far * 1.05) {
+      this.camera.far = Math.min(needed, 2e6);
     }
   }
 
@@ -721,12 +705,11 @@ export class GiaViewer {
     }
     const runSsao = this.useSsao && this._ssaoResumeFrames === 0;
 
-    // GIA hull/detail swap only while adaptive LOD is on (lod px > 0). `null` = off; `0` = hull-only (static).
     if (
       this._lodPairs.length > 0 &&
       this.lodDetailMinPx != null &&
       Number.isFinite(this.lodDetailMinPx) &&
-      this.lodDetailMinPx > 0 &&
+      this.lodDetailMinPx >= 0 &&
       (moved || this._needsRender)
     ) {
       updateGiaLodVisibility(
@@ -1263,11 +1246,6 @@ export class GiaViewer {
             try {
               const instStats = await this._maybeMergeInstancing(root);
               this.modelRoot.updateMatrixWorld(true);
-              this.modelRoot.traverse((o) => {
-                if (!o.isMesh && !o.isInstancedMesh) return;
-                if (o.isInstancedMesh) o.computeBoundingSphere();
-                o.frustumCulled = true;
-              });
               this._tuneMeshShadowFlags();
               this._rebuildMeshMaterialCache();
               buildBoundsTreesForModelRoot(this.modelRoot);
@@ -1280,21 +1258,6 @@ export class GiaViewer {
               );
               this._tuneForHeavyScene(instStats);
               this._fitCameraToObject(this.modelRoot);
-              this.modelRoot.updateMatrixWorld(true);
-              const recomputedBox = new THREE.Box3().setFromObject(
-                this.modelRoot,
-              );
-              if (!recomputedBox.isEmpty()) {
-                this._bounds.copy(recomputedBox);
-                const sz = recomputedBox.getSize(new THREE.Vector3());
-                const d = Math.sqrt(
-                  sz.x * sz.x + sz.y * sz.y + sz.z * sz.z,
-                );
-                this._syncCameraFrustum();
-                this._tuneShadowMapResolutionForBounds(d);
-                this._updateSunShadowCameraFromBounds();
-                this.initSectionSlidersFromBounds();
-              }
               this._applyClippingToModel();
               resolve(gltf);
             } catch (e) {

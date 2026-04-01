@@ -83,6 +83,12 @@ namespace GIAViewer.Components
                 "Optional; must match Vercel GIA_UPLOAD_SECRET if you set it.",
                 GH_ParamAccess.item,
                 "");
+            pManager.AddNumberParameter(
+                "Scale",
+                "Sc",
+                "Uniform scale on export (e.g. 0.001 for mm → meters in the viewer). 1 = document units unchanged.",
+                GH_ParamAccess.item,
+                1.0);
         }
 
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
@@ -105,12 +111,14 @@ namespace GIAViewer.Components
                 var localPath = "";
                 var stableKey = "";
                 var uploadSecret = "";
+                var geometryScale = 1.0;
                 da.GetData(1, ref apiBase);
                 da.GetData(2, ref viewerBase);
                 da.GetData(3, ref publish);
                 da.GetData(4, ref localPath);
                 da.GetData(5, ref stableKey);
                 da.GetData(6, ref uploadSecret);
+                da.GetData(7, ref geometryScale);
 
                 if (!publish)
                 {
@@ -195,10 +203,19 @@ namespace GIAViewer.Components
                         apiBase = NormalizeBaseUrl(apiBase);
                         viewerBase = NormalizeBaseUrl(viewerBase);
 
+                        if (geometryScale <= 0.0 || double.IsNaN(geometryScale) || double.IsInfinity(geometryScale))
+                        {
+                            _outUrl = "";
+                            _outStatus = "Error";
+                            _outMessage = "Scale (Sc) must be a positive finite number.";
+                            AddRuntimeMessage(GH_RuntimeMessageLevel.Error, _outMessage);
+                            goto DoneIter0;
+                        }
+
                         var tempGlb = Path.Combine(Path.GetTempPath(), $"gia_{Guid.NewGuid():N}.glb");
                         try
                         {
-                            GlbExporter.Export(tempGlb, meshById, placements);
+                            GlbExporter.Export(tempGlb, meshById, placements, (float)geometryScale);
                         }
                         catch (Exception ex)
                         {
