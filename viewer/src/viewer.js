@@ -42,6 +42,8 @@ export class GiaViewer {
       antialias: true,
       alpha: false,
       powerPreference: "high-performance",
+      // Large far (city-scale) + small near (close inspection) otherwise exhausts 24-bit depth → flicker / z-fighting.
+      logarithmicDepthBuffer: true,
     });
     this._targetPixelRatio = Math.min(window.devicePixelRatio, 2);
     this.renderer.setPixelRatio(this._targetPixelRatio);
@@ -86,13 +88,13 @@ export class GiaViewer {
     this.controls.minDistance = 0.1;
     this.controls.maxDistance = 1e6;
     this.controls.enableDblClickZoom = false;
-    // Full frustum sync on fit/focus; while orbiting we expand `far` when needed and tighten `near` from camera–bounds distance.
+    // Full frustum on fit/focus. While orbiting only grow `far` if needed — do not retune `near` from camera vs
+    // world AABB each frame; that distance swings with orbit angle and was retuning the projection every change
+    // (flicker / apparent clipping). Log depth + stable `near` from model size (see _syncCameraFrustum) avoids that.
     this.controls.addEventListener("change", () => {
       const prevFar = this.camera.far;
       this._expandCameraFarIfNeeded();
-      const prevNear = this.camera.near;
-      this._recomputeCameraNearFromBounds();
-      if (this.camera.far !== prevFar || this.camera.near !== prevNear) {
+      if (this.camera.far !== prevFar) {
         this.camera.updateProjectionMatrix();
       }
     });
@@ -560,8 +562,8 @@ export class GiaViewer {
 
   /**
    * Near/far for the loaded model. Call when the camera is placed (fit, URL view, double-click focus).
-   * `far` uses bbox + max dolly. `near` uses model size, distance to the bounds hull, and a far/near ratio cap;
-   * while orbiting, {@link _recomputeCameraNearFromBounds} keeps `near` low when zoomed in (reduces clipping).
+   * `far` uses bbox + max dolly. `near` uses model size only ({@link _setStableCameraNearFromModel}) so it does
+   * not change every orbit tick (that used to fight the projection and cause angle-dependent flicker).
    */
   _syncCameraFrustum() {
     if (this._bounds.isEmpty()) {
@@ -602,15 +604,16 @@ export class GiaViewer {
     far = Math.max(far, maxDist * 2.75, modelDiag * 6, 500);
     far = Math.min(far, 2e6);
     this.camera.far = far;
-    this._recomputeCameraNearFromBounds();
+    this._setStableCameraNearFromModel();
     this.camera.updateProjectionMatrix();
   }
 
   /**
-   * Perspective `near` from model diagonal, distance to the AABB hull, and a soft far/near ratio limit.
-   * When the camera moves close to the model, `near` drops so the front of the mesh is not clipped.
+   * Perspective `near` from model diagonal only — constant while orbiting so the projection matrix does not
+   * drift with view angle (camera-to-world-AABB distance changes every degree of yaw/pitch).
+   * {@link WebGLRenderer} uses logarithmicDepthBuffer so a modest `near` still works with a large `far`.
    */
-  _recomputeCameraNearFromBounds() {
+  _setStableCameraNearFromModel() {
     if (this._bounds.isEmpty()) {
       this.camera.near = 0.01;
       return;
@@ -620,18 +623,9 @@ export class GiaViewer {
     const sy = max.y - min.y;
     const sz = max.z - min.z;
     const modelDiag = Math.sqrt(sx * sx + sy * sy + sz * sz);
-
-    const minNear = 0.001;
-    const dSurf = this._bounds.distanceToPoint(this.camera.position);
-    const proximityNear = dSurf > 1e-9 ? dSurf * 0.12 : minNear;
-    const modelCap = Math.max(minNear, modelDiag * 2e-5);
-    const far = Math.max(this.camera.far, 1);
-    const ratioCap = Math.max(minNear, far / 1e6);
-
-    this.camera.near = Math.max(
-      minNear,
-      Math.min(proximityNear, modelCap, ratioCap),
-    );
+    const lo = 0.001;
+    const hi = 5;
+    this.camera.near = Math.max(lo, Math.min(modelDiag * 2e-5, hi));
   }
 
   /**

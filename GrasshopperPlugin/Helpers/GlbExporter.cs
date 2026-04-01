@@ -17,6 +17,8 @@ namespace GIAViewer.Helpers
     /// Writes vertex positions in Rhino document units (no automatic conversion to glTF meters).
     /// The viewer interprets scene distances in the same numeric space as the exported coordinates.
     /// Use <paramref name="geometryScale"/> to shrink large unit systems (e.g. 0.001 for mm) so web viewers keep sane clip ranges.
+    /// Each placement becomes a separate glTF node; SharpGLTF can emit EXT_mesh_gpu_instancing via
+    /// <see cref="SceneBuilderSchema2Settings.GpuMeshInstancingMinCount"/>, but xeokit's GLTF path does not load that extension yet.
     /// </summary>
     internal static class GlbExporter
     {
@@ -77,8 +79,10 @@ namespace GIAViewer.Helpers
             {
                 if (!meshBuilders.TryGetValue(meshId, out var mb))
                     continue;
+                // Uniform geometry scale is mesh-local: v → matrix * (scale * v). Using scale * matrix would
+                // also scale the instance translation (and shear non-uniform cases), hiding or distorting meshes.
                 var worldMatrix = scaleMatrix.HasValue
-                    ? Matrix4x4.Multiply(scaleMatrix.Value, matrix)
+                    ? Matrix4x4.Multiply(matrix, scaleMatrix.Value)
                     : matrix;
                 if (hullBuilders != null && hullBuilders.TryGetValue(meshId, out var hullMb))
                 {
