@@ -86,8 +86,9 @@ export class GiaViewer {
     this.controls.minDistance = 0.1;
     this.controls.maxDistance = 1e6;
     this.controls.enableDblClickZoom = false;
-    // Full frustum sync only on fit/focus; during orbit we only expand `far` when needed (see _expandCameraFarIfNeeded).
+    // During orbit: shrink/grow `near` from view distance (see _syncCameraNearFromBounds); expand `far` only when needed.
     this.controls.addEventListener("change", () => {
+      this._syncCameraNearFromBounds();
       this._expandCameraFarIfNeeded();
     });
     this.controls.addEventListener("start", () => {
@@ -552,9 +553,39 @@ export class GiaViewer {
   }
 
   /**
+   * Keep the perspective near plane below the distance to the scene box so zoom-in never leaves the
+   * whole model in front of `near` (large `modelDiag * 1e-4` alone clips tight views on big models).
+   */
+  _syncCameraNearFromBounds() {
+    if (this._bounds.isEmpty()) {
+      this.camera.near = 0.02;
+      this.camera.updateProjectionMatrix();
+      return;
+    }
+    const { min, max } = this._bounds;
+    const cp = this.camera.position;
+    const t = this.controls.target;
+    const scratch = this._bboxCorners[0];
+    scratch.copy(cp).clamp(min, max);
+    const distToBox = cp.distanceTo(scratch);
+    const sx = max.x - min.x;
+    const sy = max.y - min.y;
+    const sz = max.z - min.z;
+    const modelDiag = Math.sqrt(sx * sx + sy * sy + sz * sz);
+    const nearFromModel = Math.max(0.02, modelDiag * 0.0001);
+    const distTarget = cp.distanceTo(t);
+    const capFromTarget = distTarget * 0.22;
+    const capFromBox =
+      distToBox > 1e-5 ? distToBox * 0.22 : distTarget * 0.14;
+    const nearCap = Math.max(0.02, Math.min(capFromTarget, capFromBox));
+    this.camera.near = Math.min(nearFromModel, nearCap);
+    this.camera.updateProjectionMatrix();
+  }
+
+  /**
    * Near/far for the loaded model. Call when the camera is placed (fit, URL view, double-click focus).
-   * `near` scales with model size to keep a sane depth precision ratio; `far` uses bbox + max dolly.
-   * While orbiting, only {@link _expandCameraFarIfNeeded} runs (expands `far` only, never shrinks).
+   * `near` scales with model size for depth precision but is capped from view distance; `far` uses bbox + max dolly.
+   * While orbiting, {@link _syncCameraNearFromBounds} and {@link _expandCameraFarIfNeeded} run on each change.
    */
   _syncCameraFrustum() {
     if (this._bounds.isEmpty()) {
@@ -563,6 +594,7 @@ export class GiaViewer {
       this.camera.updateProjectionMatrix();
       return;
     }
+    this._syncCameraNearFromBounds();
     const { min, max } = this._bounds;
     const corners = this._bboxCorners;
     corners[0].set(min.x, min.y, min.z);
@@ -590,7 +622,6 @@ export class GiaViewer {
     );
     const modelDiag = Math.sqrt(sx * sx + sy * sy + sz * sz);
 
-    this.camera.near = Math.max(0.02, modelDiag * 0.0001);
     const orbit = this.controls.maxDistance;
     let far = orbit + boundR * 4 + modelDiag * 2;
     far = Math.max(far, maxDist * 2.75, modelDiag * 6, 500);
