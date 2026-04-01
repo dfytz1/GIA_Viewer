@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
+using System.Threading.Tasks;
 using GIAViewer.Models;
 using Rhino.Geometry;
 using SharpGLTF.Geometry;
@@ -25,30 +27,21 @@ namespace GIAViewer.Helpers
 
             var scene = new SceneBuilder();
 
-            var meshBuilders =
-                new Dictionary<string, MeshBuilder<VertexPositionNormal, VertexEmpty, VertexEmpty>>(
-                    StringComparer.OrdinalIgnoreCase);
-            foreach (var kv in meshById)
+            Dictionary<string, MeshBuilder<VertexPositionNormal, VertexEmpty, VertexEmpty>> meshBuilders;
+
+            if (meshById.Count <= 1)
             {
-                var def = kv.Value;
-                var mb = VertexBuilder<VertexPositionNormal, VertexEmpty, VertexEmpty>.CreateCompatibleMesh(
-                    SanitizeName(def.MeshId));
-                var rgba = ToRgba(def.Material?.Color ?? System.Drawing.Color.LightGray);
-                var metallic = (float)Math.Clamp(def.Material?.Metallic ?? 0, 0, 1);
-                var roughness = (float)Math.Clamp(def.Material?.Roughness ?? 0.5, 0, 1);
-                var matName = SanitizeName(def.Material?.Name ?? "Material");
-                var material = new MaterialBuilder(matName)
-                    .WithDoubleSide(true)
-                    .WithMetallicRoughnessShader()
-                    .WithBaseColor(rgba)
-                    .WithMetallicRoughness(metallic, roughness);
-
-                if (rgba.W < 0.999f)
-                    material.AlphaMode = AlphaMode.BLEND;
-
-                var prim = mb.UsePrimitive(material);
-                AddRhinoMesh(prim, def.RhinoMesh);
-                meshBuilders[kv.Key] = mb;
+                meshBuilders = new Dictionary<string, MeshBuilder<VertexPositionNormal, VertexEmpty, VertexEmpty>>(
+                    StringComparer.OrdinalIgnoreCase);
+                foreach (var kv in meshById)
+                    meshBuilders[kv.Key] = BuildMeshBuilderForDefinition(kv.Value);
+            }
+            else
+            {
+                var concurrent = new ConcurrentDictionary<string, MeshBuilder<VertexPositionNormal, VertexEmpty, VertexEmpty>>(
+                    StringComparer.OrdinalIgnoreCase);
+                Parallel.ForEach(meshById, kv => { concurrent[kv.Key] = BuildMeshBuilderForDefinition(kv.Value); });
+                meshBuilders = concurrent.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase);
             }
 
             foreach (var (meshId, matrix) in placements)
@@ -60,6 +53,29 @@ namespace GIAViewer.Helpers
 
             var model = scene.ToGltf2();
             model.SaveGLB(path);
+        }
+
+        private static MeshBuilder<VertexPositionNormal, VertexEmpty, VertexEmpty> BuildMeshBuilderForDefinition(
+            GiaMeshDefinition def)
+        {
+            var mb = VertexBuilder<VertexPositionNormal, VertexEmpty, VertexEmpty>.CreateCompatibleMesh(
+                SanitizeName(def.MeshId));
+            var rgba = ToRgba(def.Material?.Color ?? System.Drawing.Color.LightGray);
+            var metallic = (float)Math.Clamp(def.Material?.Metallic ?? 0, 0, 1);
+            var roughness = (float)Math.Clamp(def.Material?.Roughness ?? 0.5, 0, 1);
+            var matName = SanitizeName(def.Material?.Name ?? "Material");
+            var material = new MaterialBuilder(matName)
+                .WithDoubleSide(true)
+                .WithMetallicRoughnessShader()
+                .WithBaseColor(rgba)
+                .WithMetallicRoughness(metallic, roughness);
+
+            if (rgba.W < 0.999f)
+                material.AlphaMode = AlphaMode.BLEND;
+
+            var prim = mb.UsePrimitive(material);
+            AddRhinoMesh(prim, def.RhinoMesh);
+            return mb;
         }
 
         private static string SanitizeName(string s)
@@ -80,19 +96,30 @@ namespace GIAViewer.Helpers
         {
             var normals = mesh.Normals;
             var verts = mesh.Vertices;
-            var hasVn = normals.Count == verts.Count;
+            var vCount = verts.Count;
+            var hasVn = vCount > 0 && normals.Count == vCount;
             if (!hasVn)
             {
                 mesh.FaceNormals.ComputeFaceNormals();
             }
 
-            for (var fi = 0; fi < mesh.Faces.Count; fi++)
+            var faceCount = mesh.Faces.Count;
+            if (mesh.FaceNormals.Count < faceCount)
+                mesh.FaceNormals.ComputeFaceNormals();
+
+            bool VertOk(int i) => i >= 0 && i < vCount;
+
+            for (var fi = 0; fi < faceCount; fi++)
             {
                 var f = mesh.Faces[fi];
+                if (fi >= mesh.FaceNormals.Count)
+                    break;
                 var fn = mesh.FaceNormals[fi];
 
                 void Tri(int a, int b, int c)
                 {
+                    if (!VertOk(a) || !VertOk(b) || !VertOk(c))
+                        return;
                     var pa = ToPos(verts[a]);
                     var pb = ToPos(verts[b]);
                     var pc = ToPos(verts[c]);

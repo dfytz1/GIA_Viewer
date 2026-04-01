@@ -19,10 +19,21 @@ namespace GIAViewer.Components
 
         protected override Bitmap Icon => null;
 
+        public override void AddedToDocument(GH_Document document)
+        {
+            base.AddedToDocument(document);
+            if (Params?.Input.Count > 1)
+                Params.Input[1].Optional = true;
+        }
+
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
             pManager.AddCurveParameter("Curve", "C", "Closed planar → cap; open/non-planar → pipe", GH_ParamAccess.item);
-            pManager.AddGenericParameter("Material", "Mat", "From Bim Material", GH_ParamAccess.item);
+            pManager.AddGenericParameter(
+                "Material",
+                "Mat",
+                "Optional Bim Material; default = white PBR if empty",
+                GH_ParamAccess.item);
             pManager.AddTextParameter(
                 "MeshId",
                 "Id",
@@ -49,18 +60,8 @@ namespace GIAViewer.Components
             }
 
             object matObj = null;
-            if (!da.GetData(1, ref matObj))
-            {
-                AddRuntimeMessage(GH_RuntimeMessageLevel.Error, "Material required.");
-                return;
-            }
-
-            var mat = GiaObjectHelper.AsMaterial(matObj);
-            if (mat == null)
-            {
-                AddRuntimeMessage(GH_RuntimeMessageLevel.Error, "Material must come from Bim Material.");
-                return;
-            }
+            da.GetData(1, ref matObj);
+            var mat = GiaObjectHelper.AsMaterial(matObj) ?? GiaDefaults.CreateWhiteMaterial();
 
             var id = "";
             da.GetData(2, ref id);

@@ -9,7 +9,10 @@
    ```json
    [
      {
-       "AllowedOrigins": ["https://gia-viewer.vercel.app"],
+       "AllowedOrigins": [
+         "https://gia-viewer.vercel.app",
+         "https://viewer-dusky.vercel.app"
+       ],
        "AllowedMethods": ["GET", "HEAD", "PUT"],
        "AllowedHeaders": ["*"],
        "ExposeHeaders": ["ETag", "Content-Length"],
@@ -21,7 +24,9 @@
    - **GET** / **HEAD**: loading models in the browser (Three.js `fetch`).
    - **PUT**: optional but recommended so **presigned uploads** from a browser (if you add one later) work; Grasshopper’s `HttpClient` upload does not use CORS.
 
-   For **Vercel preview** URLs (`*.vercel.app` with random names), either add another object to the array with that exact origin, or temporarily use `"AllowedOrigins": ["*"]` while testing (looser).
+   Add **every** viewer origin you use (no trailing slash). If you open a share link on `https://viewer-dusky.vercel.app` but CORS only allows `https://gia-viewer.vercel.app`, the console shows **Failed to fetch** and the model will not load.
+
+   For **Vercel preview** URLs (`*.vercel.app` with random names), either add another origin string, or temporarily use `"AllowedOrigins": ["*"]` while testing (looser).
 
    Origins must **not** include a trailing slash or path — see [Configure CORS](https://developers.cloudflare.com/r2/buckets/cors/).
 4. **API tokens**: R2 → **Manage R2 API Tokens** → create token with **Object Read & Write** on this bucket. Note **Access Key ID**, **Secret Access Key**, and **Account ID** (from the R2 overview URL or dashboard sidebar).

@@ -37,6 +37,7 @@ export class GiaViewer {
       antialias: true,
       alpha: false,
       powerPreference: "high-performance",
+      logarithmicDepthBuffer: true,
     });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setSize(w, h);
@@ -49,7 +50,10 @@ export class GiaViewer {
     container.appendChild(this.renderer.domElement);
 
     this.scene = new THREE.Scene();
-    this._cornerScratch = new THREE.Vector3();
+    this._bboxCorners = Array.from({ length: 8 }, () => new THREE.Vector3());
+    /** @type {THREE.Material[]} Unique mesh materials for clipping (no per-frame traverse). */
+    this._clippingMaterialList = [];
+    this._needsRender = true;
 
     this.camera = new THREE.PerspectiveCamera(45, w / h, 0.02, 1e7);
     this.camera.position.set(12, 8, 12);
@@ -61,7 +65,7 @@ export class GiaViewer {
     this.controls.minDistance = 0.1;
     this.controls.maxDistance = 1e6;
     this.controls.enableDblClickZoom = false;
-    this.controls.addEventListener("change", () => this._syncCameraFrustum());
+    // Do not call _syncCameraFrustum on every change — varying projection every frame causes harsh flicker.
 
     this.raycaster = new THREE.Raycaster();
     this._ndc = new THREE.Vector2();
@@ -85,7 +89,7 @@ export class GiaViewer {
     );
     this.sun.position.set(18, 28, 12);
     this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(2048, 2048);
+    this.sun.shadow.mapSize.set(1024, 1024);
     this.sun.shadow.camera.near = 0.5;
     this.sun.shadow.camera.far = 200;
     this.sun.shadow.camera.left = -60;
@@ -137,7 +141,8 @@ export class GiaViewer {
     this.outputPass = new OutputPass();
     this.composer.addPass(this.outputPass);
 
-    this.useSsao = true;
+    this.useSsao = false;
+    this.ssaoPass.enabled = false;
 
     this._gltfLoader = this._makeLoader();
 
@@ -240,7 +245,12 @@ export class GiaViewer {
     this.camera.position.set(px, py, pz);
     this.controls.target.set(tx, ty, tz);
     this.controls.update();
+    const dist = this.camera.position.distanceTo(this.controls.target);
+    if (dist > this.controls.maxDistance * 0.995) {
+      this.controls.maxDistance = Math.min(1e6, Math.max(dist * 1.35, dist + 1));
+    }
     this._syncCameraFrustum();
+    this._invalidateRender();
   }
 
   /** Serialize current look to URLSearchParams keys (exp, env, sun, …). */
@@ -317,6 +327,7 @@ export class GiaViewer {
     }
     if (this.ssaoPass.minDistance >= this.ssaoPass.maxDistance)
       this.ssaoPass.minDistance = this.ssaoPass.maxDistance * 0.05;
+    this._invalidateRender();
   }
 
   resetLookSettings() {
@@ -334,10 +345,12 @@ export class GiaViewer {
   setSsao(enabled) {
     this.useSsao = !!enabled;
     this.ssaoPass.enabled = this.useSsao;
+    this._invalidateRender();
   }
 
   setGridVisible(v) {
     this.grid.visible = v;
+    this._invalidateRender();
   }
 
   getBackgroundColorHex() {
@@ -375,40 +388,60 @@ export class GiaViewer {
         mats[1]?.color?.setHex(0xb8c4d0);
       }
     }
+    this._invalidateRender();
   }
 
-  /** Keep near/far valid for the full model after zoom-to-detail (do not use focused mesh only). */
+  _invalidateRender() {
+    this._needsRender = true;
+  }
+
+  /**
+   * Near/far for the loaded model. Call only when the camera is placed (fit, URL view, double-click focus) —
+   * not while orbiting; updating the projection matrix every frame makes geometry flicker badly.
+   *
+   * Uses a tight-ish stable far (bbox + max dolly) instead of a flat 1e7 so the depth buffer resolves
+   * nearby coplanar surfaces when zoomed out. Logarithmic depth helps when far is still large.
+   */
   _syncCameraFrustum() {
     if (this._bounds.isEmpty()) {
       this.camera.near = 0.01;
-      this.camera.far = 1e7;
+      this.camera.far = 1e5;
       this.camera.updateProjectionMatrix();
       return;
     }
     const { min, max } = this._bounds;
-    const corners = [
-      [min.x, min.y, min.z],
-      [max.x, min.y, min.z],
-      [min.x, max.y, min.z],
-      [max.x, max.y, min.z],
-      [min.x, min.y, max.z],
-      [max.x, min.y, max.z],
-      [min.x, max.y, max.z],
-      [max.x, max.y, max.z],
-    ];
+    const corners = this._bboxCorners;
+    corners[0].set(min.x, min.y, min.z);
+    corners[1].set(max.x, min.y, min.z);
+    corners[2].set(min.x, max.y, min.z);
+    corners[3].set(max.x, max.y, min.z);
+    corners[4].set(min.x, min.y, max.z);
+    corners[5].set(max.x, min.y, max.z);
+    corners[6].set(min.x, max.y, max.z);
+    corners[7].set(max.x, max.y, max.z);
     const cp = this.camera.position;
     const t = this.controls.target;
     let maxDist = cp.distanceTo(t);
-    const v = this._cornerScratch;
-    for (let i = 0; i < corners.length; i++) {
-      const c = corners[i];
-      v.set(c[0], c[1], c[2]);
-      maxDist = Math.max(maxDist, cp.distanceTo(v));
+    for (let i = 0; i < 8; i++) {
+      maxDist = Math.max(maxDist, cp.distanceTo(corners[i]));
     }
     maxDist = Math.max(maxDist, 1);
-    // Fixed small near: scaling near with scene size caused clipping when zoomed in on detail then pulling back.
+
+    const sx = max.x - min.x;
+    const sy = max.y - min.y;
+    const sz = max.z - min.z;
+    const half = { x: sx * 0.5, y: sy * 0.5, z: sz * 0.5 };
+    const boundR = Math.sqrt(
+      half.x * half.x + half.y * half.y + half.z * half.z,
+    );
+    const diagonal = Math.sqrt(sx * sx + sy * sy + sz * sz);
+
     this.camera.near = 0.02;
-    this.camera.far = Math.max(maxDist * 2.75, 5e4, 1e7);
+    const orbit = this.controls.maxDistance;
+    let far = orbit + boundR * 4 + diagonal * 2;
+    far = Math.max(far, maxDist * 2.75, diagonal * 6, 500);
+    far = Math.min(far, 2e6);
+    this.camera.far = far;
     this.camera.updateProjectionMatrix();
   }
 
@@ -420,16 +453,31 @@ export class GiaViewer {
     this.renderer.setSize(w, h);
     this.composer.setSize(w, h);
     this.ssaoPass.setSize(w, h);
+    this._invalidateRender();
   }
 
   _animate() {
     requestAnimationFrame(this._animate);
-    this.controls.update();
-    if (this.useSsao) {
-      this.composer.render();
-    } else {
-      this.renderer.render(this.scene, this.camera);
+    const moved = this.controls.update();
+    if (moved || this._needsRender) {
+      if (this.useSsao) this.composer.render();
+      else this.renderer.render(this.scene, this.camera);
+      this._needsRender = false;
     }
+  }
+
+  _rebuildMeshMaterialCache() {
+    const set = new Set();
+    this.modelRoot.traverse((obj) => {
+      if (!obj.isMesh) return;
+      const mats = Array.isArray(obj.material)
+        ? obj.material
+        : [obj.material];
+      mats.forEach((m) => {
+        if (m) set.add(m);
+      });
+    });
+    this._clippingMaterialList = [...set];
   }
 
   _applyClippingToModel() {
@@ -441,18 +489,25 @@ export class GiaViewer {
     if (this._clipEnabled.z && this.clippingPlanes.z)
       planes.push(this.clippingPlanes.z);
 
-    this.modelRoot.traverse((obj) => {
-      if (!obj.isMesh) return;
-      const mats = Array.isArray(obj.material)
-        ? obj.material
-        : [obj.material];
-      mats.forEach((m) => {
-        if (!m) return;
-        m.clippingPlanes = planes;
-        m.clipIntersection = false;
-        m.needsUpdate = true;
+    const apply = (m) => {
+      if (!m) return;
+      m.clippingPlanes = planes;
+      m.clipIntersection = false;
+      m.needsUpdate = true;
+    };
+
+    if (this._clippingMaterialList.length) {
+      this._clippingMaterialList.forEach(apply);
+    } else {
+      this.modelRoot.traverse((obj) => {
+        if (!obj.isMesh) return;
+        const mats = Array.isArray(obj.material)
+          ? obj.material
+          : [obj.material];
+        mats.forEach(apply);
       });
-    });
+    }
+    this._invalidateRender();
   }
 
   setSectionAxis(axis, enabled, position) {
@@ -614,10 +669,12 @@ export class GiaViewer {
   _clearSelectionHighlight() {
     if (this._selectedMesh?.userData?.giaSelectionEdges) {
       const line = this._selectedMesh.userData.giaSelectionEdges;
+      const mesh = this._selectedMesh;
       line.parent?.remove(line);
-      line.geometry?.dispose();
+      const geo = line.geometry;
+      if (geo && geo !== mesh.userData.giaCachedEdgesGeo) geo.dispose();
       line.material?.dispose();
-      delete this._selectedMesh.userData.giaSelectionEdges;
+      delete mesh.userData.giaSelectionEdges;
     }
     if (!this._selectedMesh) return;
     const mats = this._collectMaterials(this._selectedMesh);
@@ -636,6 +693,7 @@ export class GiaViewer {
       delete mat.userData.giaSelectionColorMode;
     });
     this._selectedMesh = null;
+    this._invalidateRender();
   }
 
   _setSelectedMesh(mesh) {
@@ -650,7 +708,11 @@ export class GiaViewer {
         mesh.count > 48 &&
         mesh.geometry?.attributes?.position;
       if (!skipEdges) {
-        const edges = new THREE.EdgesGeometry(mesh.geometry, 35);
+        let edges = mesh.userData.giaCachedEdgesGeo;
+        if (!edges) {
+          edges = new THREE.EdgesGeometry(mesh.geometry, 35);
+          mesh.userData.giaCachedEdgesGeo = edges;
+        }
         const line = new THREE.LineSegments(
           edges,
           new THREE.LineBasicMaterial({
@@ -686,6 +748,7 @@ export class GiaViewer {
         mat.userData.giaSelectionColorMode = true;
       }
     });
+    this._invalidateRender();
   }
 
   _focusOnMesh(mesh) {
@@ -714,6 +777,7 @@ export class GiaViewer {
 
     this.controls.update();
     this._syncCameraFrustum();
+    this._invalidateRender();
   }
 
   _fitCameraToObject(object) {
@@ -732,12 +796,21 @@ export class GiaViewer {
     const dir = new THREE.Vector3(1, 0.65, 1).normalize();
     this.camera.position.copy(center.clone().add(dir.multiplyScalar(offset)));
 
+    const diagonal = Math.sqrt(
+      size.x * size.x + size.y * size.y + size.z * size.z,
+    );
+    this.controls.maxDistance = Math.min(
+      1e6,
+      Math.max(diagonal * 200, 5000),
+    );
+
     this.sun.position.copy(center.clone().add(new THREE.Vector3(40, 80, 30)));
     this.sun.target.position.copy(center);
 
     this.controls.update();
     this._syncCameraFrustum();
     this.initSectionSlidersFromBounds();
+    this._invalidateRender();
   }
 
   /**
@@ -762,7 +835,7 @@ export class GiaViewer {
       return { mergedGroups: 0, meshCountBefore, meshCountAfter: meshCountBefore };
     }
 
-    const stats = mergeIdenticalMeshesToInstanced(root, { minGroupSize: 2 });
+    const stats = mergeIdenticalMeshesToInstanced(root, { minGroupSize: 3 });
     if (stats.mergedGroups > 0) {
       console.info(
         `[GIA] GPU instancing: ${stats.meshCountBefore} mesh draws → ${stats.meshCountAfter} (${stats.mergedGroups} instanced groups; add ?noinst=1 to disable)`,
@@ -773,7 +846,7 @@ export class GiaViewer {
 
   /**
    * Large instance counts: SSAO and shadow resolution hurt more than they help at city scale.
-   * URL ?heavy=1 enables; or auto when instancing merged 800+ draws away (unless ?ssao=1).
+   * URL ?heavy=1 enables; or auto when mesh count / instancing savings are high (unless ?ssao=1).
    */
   _tuneForHeavyScene(stats) {
     if (typeof window === "undefined" || !stats) return;
@@ -781,8 +854,8 @@ export class GiaViewer {
     const forceHeavy = sp.has("heavy");
     const forceSsao = sp.get("ssao") === "1";
     const saved = stats.meshCountBefore - stats.meshCountAfter;
-    const manyMeshes = stats.meshCountBefore >= 1800;
-    if (!forceHeavy && !manyMeshes && (saved < 800 || forceSsao)) return;
+    const manyMeshes = stats.meshCountBefore >= 900;
+    if (!forceHeavy && !manyMeshes && (saved < 400 || forceSsao)) return;
 
     if (this.useSsao && !forceSsao) {
       this.ssaoPass.kernelRadius = Math.min(this.ssaoPass.kernelRadius, 6);
@@ -790,14 +863,22 @@ export class GiaViewer {
       this.ssaoPass.minDistance = Math.max(this.ssaoPass.minDistance, 0.002);
     }
     const sm = this.sun.shadow.mapSize;
-    if (sm.x > 1024) sm.set(1024, 1024);
+    if (sm.x > 512) sm.set(512, 512);
+    this._invalidateRender();
   }
 
   loadFromUrl(url) {
     return new Promise((resolve, reject) => {
       this._clearSelectionHighlight();
+      this.modelRoot.traverse((o) => {
+        if (o.userData?.giaCachedEdgesGeo) {
+          o.userData.giaCachedEdgesGeo.dispose();
+          delete o.userData.giaCachedEdgesGeo;
+        }
+      });
       while (this.modelRoot.children.length)
         this.modelRoot.remove(this.modelRoot.children[0]);
+      this._clippingMaterialList = [];
 
       this._gltfLoader.load(
         url,
@@ -819,6 +900,7 @@ export class GiaViewer {
 
           this.modelRoot.add(root);
           const instStats = this._maybeMergeInstancing(root);
+          this._rebuildMeshMaterialCache();
           this._tuneForHeavyScene(instStats);
           this._fitCameraToObject(this.modelRoot);
           this._applyClippingToModel();

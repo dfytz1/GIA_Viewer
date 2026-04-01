@@ -4,17 +4,38 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace GIAViewer.Helpers
 {
     internal static class UploadClient
     {
+        /// <summary>Shared client avoids per-upload socket churn; do not dispose.</summary>
+        private static readonly HttpClient SharedClient = new HttpClient
+        {
+            Timeout = TimeSpan.FromMinutes(15),
+        };
+
         public static (string viewerUrl, string status, string detail) Publish(
             string glbPath,
             string apiBase,
             string viewerBase,
             string stableKey = null,
             string uploadSecret = null)
+        {
+            return PublishAsync(glbPath, apiBase, viewerBase, stableKey, uploadSecret, CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+        }
+
+        public static async Task<(string viewerUrl, string status, string detail)> PublishAsync(
+            string glbPath,
+            string apiBase,
+            string viewerBase,
+            string stableKey = null,
+            string uploadSecret = null,
+            CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrWhiteSpace(glbPath) || !File.Exists(glbPath))
                 return ("", "Error", "GLB file not found.");
@@ -24,7 +45,6 @@ namespace GIAViewer.Helpers
 
             try
             {
-                using var client = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
                 var postUri = new Uri($"{apiBase}/api/upload");
 
                 object jsonObj = string.IsNullOrWhiteSpace(stableKey)
@@ -36,8 +56,8 @@ namespace GIAViewer.Helpers
                 if (!string.IsNullOrWhiteSpace(uploadSecret))
                     postReq.Headers.TryAddWithoutValidation("X-GIA-Upload-Secret", uploadSecret.Trim());
 
-                var post = client.SendAsync(postReq).GetAwaiter().GetResult();
-                var body = post.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                using var post = await SharedClient.SendAsync(postReq, cancellationToken).ConfigureAwait(false);
+                var body = await post.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
                 if (!post.IsSuccessStatusCode)
                     return ("", "Error", $"POST /api/upload: {(int)post.StatusCode} {body}");
 
@@ -56,12 +76,20 @@ namespace GIAViewer.Helpers
                 if (string.IsNullOrEmpty(presignedUrl) || string.IsNullOrEmpty(modelId))
                     return ("", "Error", "Empty presigned URL or model id.");
 
-                var bytes = File.ReadAllBytes(glbPath);
+                await using var fileStream = new FileStream(
+                    glbPath,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.Read,
+                    bufferSize: 1 << 20,
+                    options: FileOptions.Asynchronous);
                 using var put = new HttpRequestMessage(HttpMethod.Put, presignedUrl);
-                put.Content = new ByteArrayContent(bytes);
+                put.Content = new StreamContent(fileStream);
                 put.Content.Headers.ContentType = new MediaTypeHeaderValue("model/gltf-binary");
-                var putResp = client.SendAsync(put).GetAwaiter().GetResult();
-                var putBody = putResp.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                put.Content.Headers.ContentLength = fileStream.Length;
+
+                using var putResp = await SharedClient.SendAsync(put, cancellationToken).ConfigureAwait(false);
+                var putBody = await putResp.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
                 if (!putResp.IsSuccessStatusCode)
                     return ("", "Error", $"PUT to R2: {(int)putResp.StatusCode} {putBody}");
 
@@ -75,6 +103,10 @@ namespace GIAViewer.Helpers
                     : "Uploaded (same link; object overwritten in R2).";
 
                 return (link, "OK", note);
+            }
+            catch (OperationCanceledException)
+            {
+                return ("", "Cancelled", "Upload cancelled.");
             }
             catch (Exception ex)
             {

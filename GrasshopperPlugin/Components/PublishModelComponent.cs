@@ -1,18 +1,36 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
-using System.Numerics;
 using System.IO;
+using System.Numerics;
+using System.Threading;
+using System.Threading.Tasks;
 using Eto.Forms;
 using GIAViewer.Helpers;
 using GIAViewer.Models;
 using Grasshopper.Kernel;
 using Grasshopper.Kernel.Types;
+using Rhino;
 
 namespace GIAViewer.Components
 {
     public class PublishModelComponent : GH_Component
     {
+        private string _outUrl = "";
+        private string _outStatus = "Idle";
+        private string _outMessage = "";
+
+        /// <summary>Incremented when uploads are invalidated (P off) or a new upload starts; completed tasks compare their id.</summary>
+        private int _uploadGeneration;
+
+        /// <summary>
+        /// After a background upload finishes, we expire the component so outputs propagate. Without this flag, the next
+        /// solve would start another upload (infinite loop). When 1, iteration 0 only pushes _out* fields and skips work.
+        /// </summary>
+        private int _pendingOutputRefresh;
+
+        private CancellationTokenSource _uploadCts;
+
         public PublishModelComponent()
             : base("Publish Model", "Publish", "Build GLB, upload to R2 via API, return viewer link.", "GIA Viewer", "Web")
         {
@@ -27,24 +45,24 @@ namespace GIAViewer.Components
             pManager.AddGenericParameter(
                 "Items",
                 "I",
-                "Bim Mesh, Bim Placed Mesh, Bim Curve, Bim Instance (same tree)",
+                "Mesh definitions (GiaMeshDefinition / Placed / Bim Mesh) **and** instances (GiaMeshInstance). Block To Bim: merge **D** + **I** here.",
                 GH_ParamAccess.tree);
             pManager.AddTextParameter(
                 "ApiBase",
                 "A",
-                "Site root, e.g. https://gia-viewer.vercel.app (https added if missing)",
+                "Optional; empty uses GiaDefaults.PublicViewerBase (https added if missing)",
                 GH_ParamAccess.item,
                 "");
             pManager.AddTextParameter(
                 "ViewerBase",
                 "V",
-                "Usually same as ApiBase (shareable link uses this host)",
+                "Optional; empty uses same as ApiBase",
                 GH_ParamAccess.item,
                 "");
             pManager.AddBooleanParameter(
                 "Publish",
                 "P",
-                "Must be True to upload and get ViewerUrl (U output)",
+                "True = upload in background (Grasshopper stays responsive). False = skip GLB unless L is set.",
                 GH_ParamAccess.item,
                 false);
             pManager.AddTextParameter(
@@ -76,163 +94,243 @@ namespace GIAViewer.Components
 
         protected override void SolveInstance(IGH_DataAccess da)
         {
-            var param = Params.Input[0];
-            if (param?.VolatileData == null)
+            if (da.Iteration == 0)
             {
-                AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, "No items.");
-                da.SetData(0, "");
-                da.SetData(1, "Idle");
-                da.SetData(2, "Connect Bim Mesh / Bim Instance to Items.");
-                return;
-            }
+                if (Interlocked.CompareExchange(ref _pendingOutputRefresh, 0, 1) == 1)
+                    goto DoneIter0;
 
-            var flat = new List<object>();
-            var structure = param.VolatileData;
-            foreach (var path in structure.Paths)
-            {
-                var branch = structure.get_Branch(path);
-                foreach (var obj in branch)
+                var apiBase = "";
+                var viewerBase = "";
+                var publish = false;
+                var localPath = "";
+                var stableKey = "";
+                var uploadSecret = "";
+                da.GetData(1, ref apiBase);
+                da.GetData(2, ref viewerBase);
+                da.GetData(3, ref publish);
+                da.GetData(4, ref localPath);
+                da.GetData(5, ref stableKey);
+                da.GetData(6, ref uploadSecret);
+
+                if (!publish)
                 {
-                    if (obj is not IGH_Goo gh) continue;
-                    object v = null;
-                    if (gh is GH_ObjectWrapper ow)
-                        v = ow.Value;
-                    else
+                    Interlocked.Increment(ref _uploadGeneration);
+                    _uploadCts?.Cancel();
+                    _uploadCts?.Dispose();
+                    _uploadCts = null;
+                }
+
+                _outStatus = "Idle";
+                _outMessage = "";
+
+                var param = Params.Input[0];
+                if (param?.VolatileData == null)
+                {
+                    _outUrl = "";
+                    AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, "No items.");
+                    _outMessage = "Connect Bim Mesh / Bim Instance to Items.";
+                }
+                else
+                {
+                    var flat = new List<object>();
+                    var structure = param.VolatileData;
+                    foreach (var path in structure.Paths)
                     {
-                        try
+                        var branch = structure.get_Branch(path);
+                        foreach (var obj in branch)
                         {
-                            v = gh.ScriptVariable();
-                        }
-                        catch
-                        {
-                            /* ignore */
+                            if (obj is not IGH_Goo gh) continue;
+                            object v = null;
+                            if (gh is GH_ObjectWrapper ow)
+                                v = ow.Value;
+                            else
+                            {
+                                try
+                                {
+                                    v = gh.ScriptVariable();
+                                }
+                                catch
+                                {
+                                    /* ignore */
+                                }
+                            }
+
+                            if (v != null)
+                                flat.Add(v);
                         }
                     }
 
-                    if (v != null)
-                        flat.Add(v);
-                }
-            }
+                    var meshById = new Dictionary<string, GiaMeshDefinition>(StringComparer.OrdinalIgnoreCase);
+                    var placements = new List<(string meshId, Matrix4x4 matrix)>();
+                    GiaExportCollector.Collect(flat, meshById, placements, w => AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, w));
 
-            var meshById = new Dictionary<string, GiaMeshDefinition>(StringComparer.OrdinalIgnoreCase);
-            var placements = new List<(string meshId, Matrix4x4 matrix)>();
-            GiaExportCollector.Collect(flat, meshById, placements, w => AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, w));
-
-            if (meshById.Count == 0)
-            {
-                AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, "No mesh definitions.");
-                da.SetData(0, "");
-                da.SetData(1, "Idle");
-                da.SetData(2, "Add Bim Mesh, Bim Placed Mesh, or Bim Curve (Bim Instance alone is not enough).");
-                return;
-            }
-
-            var apiBase = "";
-            var viewerBase = "";
-            var publish = false;
-            var localPath = "";
-            var stableKey = "";
-            var uploadSecret = "";
-            da.GetData(1, ref apiBase);
-            da.GetData(2, ref viewerBase);
-            da.GetData(3, ref publish);
-            da.GetData(4, ref localPath);
-            da.GetData(5, ref stableKey);
-            da.GetData(6, ref uploadSecret);
-
-            apiBase = NormalizeBaseUrl(apiBase);
-            viewerBase = NormalizeBaseUrl(viewerBase);
-
-            var tempGlb = Path.Combine(Path.GetTempPath(), $"gia_{Guid.NewGuid():N}.glb");
-            try
-            {
-                GlbExporter.Export(tempGlb, meshById, placements);
-            }
-            catch (Exception ex)
-            {
-                da.SetData(0, "");
-                da.SetData(1, "Error");
-                da.SetData(2, ex.Message);
-                AddRuntimeMessage(GH_RuntimeMessageLevel.Error, ex.Message);
-                return;
-            }
-
-            if (!string.IsNullOrWhiteSpace(localPath))
-            {
-                var destFile = ResolveLocalGlbPath(localPath.Trim());
-                if (destFile != null)
-                {
-                    try
+                    if (meshById.Count == 0)
                     {
-                        var dir = Path.GetDirectoryName(destFile);
-                        if (!string.IsNullOrEmpty(dir))
-                            Directory.CreateDirectory(dir);
-                        File.Copy(tempGlb, destFile, true);
+                        _outUrl = "";
+                        AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, "No mesh definitions.");
                         AddRuntimeMessage(
                             GH_RuntimeMessageLevel.Remark,
-                            $"Saved GLB to: {destFile}");
+                            "Items must include GiaMeshDefinition data (mesh geometry), not only GiaMeshInstance transforms. "
+                            + "For Block To Bim: merge the **D** (Definitions) and **I** (Instances) outputs into Items — connecting only **I** causes this error.");
+                        _outMessage = "Add definitions: Bim Mesh, Bim Placed Mesh, Bim Curve, or Block To Bim **D** + **I** merged into Items.";
                     }
-                    catch (Exception ex)
+                    else
                     {
-                        AddRuntimeMessage(
-                            GH_RuntimeMessageLevel.Warning,
-                            "Local save failed: " + ex.Message
-                                + " (use a full file path like ~/Downloads/my.glb; macOS may block writes to some folders.)");
+                        var needExport = publish || !string.IsNullOrWhiteSpace(localPath);
+                        if (!needExport)
+                        {
+                            _outStatus = "Idle";
+                            _outMessage = "Publish off: set P=true to upload (background) or L for local GLB only.";
+                            goto DoneIter0;
+                        }
+
+                        if (publish)
+                        {
+                            if (string.IsNullOrWhiteSpace(apiBase))
+                                apiBase = GiaDefaults.PublicViewerBase;
+                            if (string.IsNullOrWhiteSpace(viewerBase))
+                                viewerBase = apiBase;
+                        }
+
+                        apiBase = NormalizeBaseUrl(apiBase);
+                        viewerBase = NormalizeBaseUrl(viewerBase);
+
+                        var tempGlb = Path.Combine(Path.GetTempPath(), $"gia_{Guid.NewGuid():N}.glb");
+                        try
+                        {
+                            GlbExporter.Export(tempGlb, meshById, placements);
+                        }
+                        catch (Exception ex)
+                        {
+                            _outUrl = "";
+                            _outStatus = "Error";
+                            _outMessage = ex.Message;
+                            AddRuntimeMessage(GH_RuntimeMessageLevel.Error, ex.Message);
+                            goto DoneIter0;
+                        }
+
+                        if (!string.IsNullOrWhiteSpace(localPath))
+                        {
+                            var destFile = ResolveLocalGlbPath(localPath.Trim());
+                            if (destFile != null)
+                            {
+                                try
+                                {
+                                    var dir = Path.GetDirectoryName(destFile);
+                                    if (!string.IsNullOrEmpty(dir))
+                                        Directory.CreateDirectory(dir);
+                                    File.Copy(tempGlb, destFile, true);
+                                    AddRuntimeMessage(
+                                        GH_RuntimeMessageLevel.Remark,
+                                        $"Saved GLB to: {destFile}");
+                                }
+                                catch (Exception ex)
+                                {
+                                    AddRuntimeMessage(
+                                        GH_RuntimeMessageLevel.Warning,
+                                        "Local save failed: " + ex.Message
+                                            + " (use a full file path like ~/Downloads/my.glb; macOS may block writes to some folders.)");
+                                }
+                            }
+                        }
+
+                        if (!publish)
+                        {
+                            _outStatus = "GLB ready";
+                            _outMessage = tempGlb;
+                            goto DoneIter0;
+                        }
+
+                        _outUrl = "";
+                        _outStatus = "Uploading…";
+                        _outMessage = "Upload running in background; canvas stays responsive. Outputs refresh when done.";
+
+                        _uploadCts?.Cancel();
+                        _uploadCts?.Dispose();
+                        _uploadCts = new CancellationTokenSource();
+                        var token = _uploadCts.Token;
+                        var taskGen = Interlocked.Increment(ref _uploadGeneration);
+
+                        var pathCopy = tempGlb;
+                        var apiCopy = apiBase;
+                        var viewerCopy = viewerBase;
+                        var keyCopy = stableKey;
+                        var secretCopy = uploadSecret;
+
+                        _ = Task.Run(
+                            async () =>
+                            {
+                                try
+                                {
+                                    var (url, status, detail) = await UploadClient.PublishAsync(
+                                        pathCopy,
+                                        apiCopy,
+                                        viewerCopy,
+                                        keyCopy,
+                                        secretCopy,
+                                        token).ConfigureAwait(false);
+
+                                    RhinoApp.InvokeOnUiThread(
+                                        () => ApplyUploadResult(taskGen, url, status, detail));
+                                }
+                                catch (OperationCanceledException)
+                                {
+                                    RhinoApp.InvokeOnUiThread(() => ApplyUploadResult(taskGen, "", "Cancelled", "Upload cancelled."));
+                                }
+                                finally
+                                {
+                                    try
+                                    {
+                                        if (File.Exists(pathCopy))
+                                            File.Delete(pathCopy);
+                                    }
+                                    catch
+                                    {
+                                        /* ignore */
+                                    }
+                                }
+                            },
+                            token);
                     }
                 }
+
+            DoneIter0: ;
             }
 
-            if (!publish)
-            {
-                da.SetData(0, "");
-                da.SetData(1, "GLB ready");
-                da.SetData(2, tempGlb);
+            da.SetData(0, _outUrl);
+            da.SetData(1, _outStatus);
+            da.SetData(2, _outMessage);
+        }
+
+        private void ApplyUploadResult(int taskGen, string url, string status, string detail)
+        {
+            if (taskGen != Volatile.Read(ref _uploadGeneration))
                 return;
-            }
 
-            if (string.IsNullOrWhiteSpace(apiBase) || string.IsNullOrWhiteSpace(viewerBase))
-            {
-                da.SetData(0, "");
-                da.SetData(1, "Error");
-                da.SetData(2, "Set ApiBase and ViewerBase for upload.");
-                AddRuntimeMessage(GH_RuntimeMessageLevel.Error, "ApiBase and ViewerBase required when Publish is true.");
-                return;
-            }
+            _outUrl = url ?? "";
+            _outStatus = status ?? "";
+            _outMessage = detail ?? "";
 
-            var (url, status, detail) = UploadClient.Publish(
-                tempGlb,
-                apiBase,
-                viewerBase,
-                stableKey,
-                uploadSecret);
-            da.SetData(0, url ?? "");
-            da.SetData(1, status);
-            da.SetData(2, detail);
-
-            if (status == "OK" && !string.IsNullOrEmpty(url))
+            if (string.Equals(status, "OK", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(url))
             {
                 TryCopyLink(url);
                 AddRuntimeMessage(GH_RuntimeMessageLevel.Remark, "Link on output U (and clipboard if allowed).");
             }
-            else
+            else if (!string.Equals(status, "Cancelled", StringComparison.OrdinalIgnoreCase))
             {
                 AddRuntimeMessage(GH_RuntimeMessageLevel.Error, detail ?? status ?? "Upload failed.");
             }
 
-            try
-            {
-                File.Delete(tempGlb);
-            }
-            catch
-            {
-                /* ignore */
-            }
+            Interlocked.Exchange(ref _pendingOutputRefresh, 1);
+            var doc = OnPingDocument();
+            doc?.ScheduleSolution(5, ScheduleExpireAfterUpload);
         }
 
-        /// <summary>
-        /// If the user passes a directory (or a path ending in /), append a file name.
-        /// File.Copy requires a file path; passing a folder causes "access denied" on macOS.
-        /// </summary>
+        private void ScheduleExpireAfterUpload(GH_Document document)
+        {
+            ExpireSolution(false);
+        }
+
         private static string NormalizeBaseUrl(string s)
         {
             if (string.IsNullOrWhiteSpace(s))

@@ -15,3 +15,4 @@ obj/
 
 # Local test exports from Grasshopper
 gia_export_*.glb
+.vercel
