@@ -10,6 +10,11 @@ namespace GIAViewer.Models
         /// </summary>
         public const string PublicViewerBase = "https://gia-viewer.vercel.app";
 
+        /// <summary>
+        /// Default URL for <c>xeokit-viewer/</c> (separate Vercel project or path). Override via Publish Xeokit <b>ViewerBase</b>.
+        /// </summary>
+        public const string PublicXeokitViewerBase = "https://gia-xeokit.vercel.app";
+
         public static GiaBimMaterial CreateWhiteMaterial()
         {
             return new GiaBimMaterial

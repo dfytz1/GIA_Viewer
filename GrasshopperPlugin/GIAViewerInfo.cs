@@ -11,7 +11,7 @@ namespace GIAViewer
         public override Bitmap Icon => null;
 
         public override string Description =>
-            "Publish Rhino/Grasshopper meshes as GLB and open them in the GIA web viewer.";
+            "Publish Rhino/Grasshopper meshes as GLB for the GIA (Three.js) viewer or the xeokit viewer.";
 
         public override Guid Id => new Guid("a3f8c2e1-9b4d-4f6a-8c1e-2d7e9f0a1b2c");
 

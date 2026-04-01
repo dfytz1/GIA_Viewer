@@ -22,6 +22,8 @@ Deploy on [Vercel](https://vercel.com): the **`gia-viewer`** project uses **Root
 
 Add environment variables from `viewer/.env.example` (`VITE_*` for build, `R2_*` for the API). See [docs/R2_SETUP.md](docs/R2_SETUP.md) for the bucket, CORS, and tokens.
 
+**xeokit viewer (`xeokit-viewer/`):** optional second web client ([xeokit SDK](https://github.com/xeokit/xeokit-sdk), AGPL). Deploy as a separate Vercel project (root `xeokit-viewer/`). Grasshopper: **Publish Xeokit**; default viewer URL is `GiaDefaults.PublicXeokitViewerBase`. See [xeokit-viewer/README.md](xeokit-viewer/README.md).
+
 ## Grasshopper plugin (`GrasshopperPlugin/`)
 
 The project uses the official [**Grasshopper** NuGet package](https://www.nuget.org/packages/Grasshopper) (`ExcludeAssets="runtime"`), per [McNeel — Using NuGet](https://developer.rhino3d.com/guides/rhinocommon/using-nuget/). **You can compile without Rhino installed**; you still need **Rhino 8 with Grasshopper** to load and test the `.gha`.
