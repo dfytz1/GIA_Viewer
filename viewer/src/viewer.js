@@ -623,20 +623,22 @@ export class GiaViewer {
   _animate() {
     requestAnimationFrame(this._animate);
     const moved = this.controls.update();
-    const ssaoCoolingBefore = this._ssaoResumeFrames > 0;
-    if (moved) {
-      this._ssaoResumeFrames = 8;
-    } else if (this._ssaoResumeFrames > 0) {
-      this._ssaoResumeFrames--;
+    let ssaoCoolingBefore = false;
+    if (this.useSsao) {
+      ssaoCoolingBefore = this._ssaoResumeFrames > 0;
+      if (moved) {
+        this._ssaoResumeFrames = 8;
+      } else if (this._ssaoResumeFrames > 0) {
+        this._ssaoResumeFrames--;
+      }
+      if (
+        this._ssaoResumeFrames > 0 ||
+        (ssaoCoolingBefore && this._ssaoResumeFrames === 0)
+      ) {
+        this._invalidateRender();
+      }
     }
     const runSsao = this.useSsao && this._ssaoResumeFrames === 0;
-    if (
-      this.useSsao &&
-      (this._ssaoResumeFrames > 0 ||
-        (ssaoCoolingBefore && this._ssaoResumeFrames === 0))
-    ) {
-      this._invalidateRender();
-    }
 
     if (
       this._lodPairs.length > 0 &&
