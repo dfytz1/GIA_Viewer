@@ -61,8 +61,11 @@ export class GiaViewer {
     this._orbitWasMoving = false;
     /** @type {{ detail: import("three").Mesh; hull: import("three").Mesh; pivot: import("three").Object3D }[]} */
     this._lodPairs = [];
-    /** World units: beyond this distance from LOD pivot, hull replaces detail. 0 = off. */
-    this.lodDistanceWorld = 0;
+    /**
+     * LOD distance in millimeters (Rhino mm → glTF, see giaLod.MM_TO_SCENE_UNIT).
+     * `null` — full mesh only. `0` — always hull. `> 0` — hull when camera farther than this (mm).
+     */
+    this.lodDistanceMm = null;
     this._shadowOrbitSuspended = false;
     this._shadowMetricScale = new THREE.Vector3();
     this._shadowSceneSize = new THREE.Vector3();
@@ -259,8 +262,12 @@ export class GiaViewer {
       ["ty", f(t.y)],
       ["tz", f(t.z)],
     ];
-    if (viewer.lodDistanceWorld > 0)
-      entries.push(["lodm", String(Number(viewer.lodDistanceWorld.toFixed(3)))]);
+    if (
+      viewer.lodDistanceMm != null &&
+      Number.isFinite(viewer.lodDistanceMm) &&
+      viewer.lodDistanceMm >= 0
+    )
+      entries.push(["lodm", String(Number(viewer.lodDistanceMm.toFixed(2)))]);
     return entries;
   }
 
@@ -376,19 +383,25 @@ export class GiaViewer {
     this._invalidateRender();
   }
 
-  getLodDistanceWorld() {
-    return this.lodDistanceWorld;
+  getLodDistanceMm() {
+    return this.lodDistanceMm;
   }
 
-  /** @param {number} d World-space distance; 0 disables hull swap (full detail always). */
-  setLodDistanceWorld(d) {
-    const v = Number(d);
-    this.lodDistanceWorld = Number.isFinite(v) && v > 0 ? v : 0;
-    updateGiaLodVisibility(
-      this._lodPairs,
-      this.camera,
-      this.lodDistanceWorld,
-    );
+  /**
+   * @param {number | null | undefined} mm
+   *   `null`/`undefined`/empty — LOD off (full mesh only).
+   *   `0` — always show convex hull where exported.
+   *   `> 0` — hull when camera–pivot distance exceeds this many mm.
+   */
+  setLodDistanceMm(mm) {
+    if (mm === null || mm === undefined || mm === "") {
+      this.lodDistanceMm = null;
+    } else {
+      const v = Number(mm);
+      if (!Number.isFinite(v) || v < 0) this.lodDistanceMm = null;
+      else this.lodDistanceMm = v;
+    }
+    updateGiaLodVisibility(this._lodPairs, this.camera, this.lodDistanceMm);
     this._invalidateRender();
   }
 
@@ -572,13 +585,15 @@ export class GiaViewer {
 
     if (
       this._lodPairs.length > 0 &&
-      this.lodDistanceWorld > 0 &&
+      this.lodDistanceMm != null &&
+      Number.isFinite(this.lodDistanceMm) &&
+      this.lodDistanceMm >= 0 &&
       (moved || this._needsRender)
     ) {
       updateGiaLodVisibility(
         this._lodPairs,
         this.camera,
-        this.lodDistanceWorld,
+        this.lodDistanceMm,
       );
     }
 
@@ -1082,7 +1097,7 @@ export class GiaViewer {
           updateGiaLodVisibility(
             this._lodPairs,
             this.camera,
-            this.lodDistanceWorld,
+            this.lodDistanceMm,
           );
           this._tuneForHeavyScene(instStats);
           this._fitCameraToObject(this.modelRoot);

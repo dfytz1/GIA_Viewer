@@ -25,7 +25,7 @@ else if (storedBg) viewer.setBackgroundColor(storedBg);
 const lodmParam = params.get("lodm");
 if (lodmParam != null && lodmParam !== "") {
   const l = parseFloat(lodmParam);
-  if (Number.isFinite(l) && l > 0) viewer.setLodDistanceWorld(l);
+  if (Number.isFinite(l) && l >= 0) viewer.setLodDistanceMm(l);
 }
 
 const cameraFromUrl = GiaViewer.parseCameraViewFromUrl(params);
