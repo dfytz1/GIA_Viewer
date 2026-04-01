@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { buildBoundsTreesForModelRoot, disposeBoundsTreesUnderRoot } from "./meshBvhSetup.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
@@ -45,7 +46,7 @@ export class GiaViewer {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = LOOK_DEFAULTS.toneMappingExposure;
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.localClippingEnabled = true;
     container.appendChild(this.renderer.domElement);
 
@@ -54,6 +55,9 @@ export class GiaViewer {
     /** @type {THREE.Material[]} Unique mesh materials for clipping (no per-frame traverse). */
     this._clippingMaterialList = [];
     this._needsRender = true;
+    this._shadowInvMatrix = new THREE.Matrix4();
+    this._shadowCornerScratch = new THREE.Vector3();
+    this._orbitWasMoving = false;
 
     this.camera = new THREE.PerspectiveCamera(45, w / h, 0.02, 1e7);
     this.camera.position.set(12, 8, 12);
@@ -89,13 +93,13 @@ export class GiaViewer {
     );
     this.sun.position.set(18, 28, 12);
     this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(1024, 1024);
+    this.sun.shadow.mapSize.set(512, 512);
     this.sun.shadow.camera.near = 0.5;
     this.sun.shadow.camera.far = 200;
-    this.sun.shadow.camera.left = -60;
-    this.sun.shadow.camera.right = 60;
-    this.sun.shadow.camera.top = 60;
-    this.sun.shadow.camera.bottom = -60;
+    this.sun.shadow.camera.left = -10;
+    this.sun.shadow.camera.right = 10;
+    this.sun.shadow.camera.top = 10;
+    this.sun.shadow.camera.bottom = -10;
     this.scene.add(this.sun);
     this.scene.add(this.sun.target);
 
@@ -396,6 +400,68 @@ export class GiaViewer {
   }
 
   /**
+   * Fit directional shadow ortho frustum to model bounds in the sun shadow camera's view space.
+   * Call after sun position/target and _bounds are set (fit / focus).
+   */
+  _updateSunShadowCameraFromBounds() {
+    if (!this.sun.castShadow || this._bounds.isEmpty()) return;
+
+    this.sun.updateMatrixWorld(true);
+    const shadowCam = this.sun.shadow.camera;
+    shadowCam.updateMatrixWorld(true);
+
+    const inv = this._shadowInvMatrix.copy(shadowCam.matrixWorld).invert();
+    const v = this._shadowCornerScratch;
+    const { min, max } = this._bounds;
+    const xs = [min.x, max.x];
+    const ys = [min.y, max.y];
+    const zs = [min.z, max.z];
+
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+
+    for (let i = 0; i < 2; i++) {
+      for (let j = 0; j < 2; j++) {
+        for (let k = 0; k < 2; k++) {
+          v.set(xs[i], ys[j], zs[k]).applyMatrix4(inv);
+          minX = Math.min(minX, v.x);
+          maxX = Math.max(maxX, v.x);
+          minY = Math.min(minY, v.y);
+          maxY = Math.max(maxY, v.y);
+          minZ = Math.min(minZ, v.z);
+          maxZ = Math.max(maxZ, v.z);
+        }
+      }
+    }
+
+    const spanXY = Math.max(maxX - minX, maxY - minY, 0.001);
+    const spanZ = Math.max(maxZ - minZ, 0.001);
+    const padXY = spanXY * 0.08 + 0.5;
+    const padZ = spanZ * 0.12 + 2;
+
+    shadowCam.left = minX - padXY;
+    shadowCam.right = maxX + padXY;
+    shadowCam.bottom = minY - padXY;
+    shadowCam.top = maxY + padXY;
+    shadowCam.near = Math.max(0.1, -maxZ - padZ);
+    shadowCam.far = Math.max(shadowCam.near + 0.5, -minZ + padZ);
+    shadowCam.updateProjectionMatrix();
+  }
+
+  /** Shadow map texel count from scene extent: default modest res, higher only for small models. */
+  _tuneShadowMapResolutionForBounds(diagonal) {
+    let s = 512;
+    if (diagonal < 32) s = 1024;
+    else if (diagonal > 380) s = 256;
+    const cur = this.sun.shadow.mapSize.x;
+    if (cur !== s) this.sun.shadow.mapSize.set(s, s);
+  }
+
+  /**
    * Near/far for the loaded model. Call only when the camera is placed (fit, URL view, double-click focus) —
    * not while orbiting; updating the projection matrix every frame makes geometry flicker badly.
    *
@@ -459,9 +525,19 @@ export class GiaViewer {
   _animate() {
     requestAnimationFrame(this._animate);
     const moved = this.controls.update();
+    if (this.useSsao && this._orbitWasMoving && !moved) {
+      this._needsRender = true;
+    }
+    this._orbitWasMoving = moved;
+
     if (moved || this._needsRender) {
-      if (this.useSsao) this.composer.render();
-      else this.renderer.render(this.scene, this.camera);
+      if (this.useSsao && moved) {
+        this.renderer.render(this.scene, this.camera);
+      } else if (this.useSsao) {
+        this.composer.render();
+      } else {
+        this.renderer.render(this.scene, this.camera);
+      }
       this._needsRender = false;
     }
   }
@@ -777,6 +853,7 @@ export class GiaViewer {
 
     this.controls.update();
     this._syncCameraFrustum();
+    this._updateSunShadowCameraFromBounds();
     this._invalidateRender();
   }
 
@@ -809,6 +886,8 @@ export class GiaViewer {
 
     this.controls.update();
     this._syncCameraFrustum();
+    this._tuneShadowMapResolutionForBounds(diagonal);
+    this._updateSunShadowCameraFromBounds();
     this.initSectionSlidersFromBounds();
     this._invalidateRender();
   }
@@ -863,13 +942,14 @@ export class GiaViewer {
       this.ssaoPass.minDistance = Math.max(this.ssaoPass.minDistance, 0.002);
     }
     const sm = this.sun.shadow.mapSize;
-    if (sm.x > 512) sm.set(512, 512);
+    if (sm.x > 256) sm.set(256, 256);
     this._invalidateRender();
   }
 
   loadFromUrl(url) {
     return new Promise((resolve, reject) => {
       this._clearSelectionHighlight();
+      disposeBoundsTreesUnderRoot(this.modelRoot);
       this.modelRoot.traverse((o) => {
         if (o.userData?.giaCachedEdgesGeo) {
           o.userData.giaCachedEdgesGeo.dispose();
@@ -901,6 +981,7 @@ export class GiaViewer {
           this.modelRoot.add(root);
           const instStats = this._maybeMergeInstancing(root);
           this._rebuildMeshMaterialCache();
+          buildBoundsTreesForModelRoot(this.modelRoot);
           this._tuneForHeavyScene(instStats);
           this._fitCameraToObject(this.modelRoot);
           this._applyClippingToModel();
