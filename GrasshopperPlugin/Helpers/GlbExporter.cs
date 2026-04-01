@@ -44,11 +44,44 @@ namespace GIAViewer.Helpers
                 meshBuilders = concurrent.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase);
             }
 
+            Dictionary<string, MeshBuilder<VertexPositionNormal, VertexEmpty, VertexEmpty>> hullBuilders = null;
+            var hullIds = meshById.Where(kv => IsValidHullMesh(kv.Value.LodConvexHullMesh)).Select(kv => kv.Key).ToList();
+            if (hullIds.Count > 0)
+            {
+                hullBuilders = new Dictionary<string, MeshBuilder<VertexPositionNormal, VertexEmpty, VertexEmpty>>(
+                    StringComparer.OrdinalIgnoreCase);
+                if (hullIds.Count <= 1)
+                {
+                    foreach (var id in hullIds)
+                        hullBuilders[id] = BuildMeshBuilderForHull(meshById[id]);
+                }
+                else
+                {
+                    var ch = new ConcurrentDictionary<string, MeshBuilder<VertexPositionNormal, VertexEmpty, VertexEmpty>>(
+                        StringComparer.OrdinalIgnoreCase);
+                    Parallel.ForEach(hullIds, id => { ch[id] = BuildMeshBuilderForHull(meshById[id]); });
+                    hullBuilders = ch.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase);
+                }
+            }
+
             foreach (var (meshId, matrix) in placements)
             {
                 if (!meshBuilders.TryGetValue(meshId, out var mb))
                     continue;
-                scene.AddRigidMesh(mb, matrix);
+                if (hullBuilders != null && hullBuilders.TryGetValue(meshId, out var hullMb))
+                {
+                    var root = new NodeBuilder("gia_lod");
+                    root.LocalMatrix = matrix;
+                    var nodeDetail = root.CreateNode("gia_detail");
+                    var nodeHull = root.CreateNode("gia_hull");
+                    scene.AddRigidMesh(mb, nodeDetail);
+                    scene.AddRigidMesh(hullMb, nodeHull);
+                    scene.AddNode(root);
+                }
+                else
+                {
+                    scene.AddRigidMesh(mb, matrix);
+                }
             }
 
             var model = scene.ToGltf2();
@@ -75,6 +108,34 @@ namespace GIAViewer.Helpers
 
             var prim = mb.UsePrimitive(material);
             AddRhinoMesh(prim, def.RhinoMesh);
+            return mb;
+        }
+
+        private static bool IsValidHullMesh(Mesh mesh)
+        {
+            return mesh != null && mesh.IsValid && mesh.Faces.Count > 0 && mesh.Vertices.Count >= 3;
+        }
+
+        private static MeshBuilder<VertexPositionNormal, VertexEmpty, VertexEmpty> BuildMeshBuilderForHull(
+            GiaMeshDefinition def)
+        {
+            var mb = VertexBuilder<VertexPositionNormal, VertexEmpty, VertexEmpty>.CreateCompatibleMesh(
+                SanitizeName(def.MeshId + "_giaHull"));
+            var rgba = ToRgba(def.Material?.Color ?? System.Drawing.Color.LightGray);
+            var metallic = (float)Math.Clamp(def.Material?.Metallic ?? 0, 0, 1);
+            var roughness = (float)Math.Clamp(def.Material?.Roughness ?? 0.5, 0, 1);
+            var matName = SanitizeName((def.Material?.Name ?? "Material") + "_hull");
+            var material = new MaterialBuilder(matName)
+                .WithDoubleSide(true)
+                .WithMetallicRoughnessShader()
+                .WithBaseColor(rgba)
+                .WithMetallicRoughness(metallic, roughness);
+
+            if (rgba.W < 0.999f)
+                material.AlphaMode = AlphaMode.BLEND;
+
+            var prim = mb.UsePrimitive(material);
+            AddRhinoMesh(prim, def.LodConvexHullMesh);
             return mb;
         }
 

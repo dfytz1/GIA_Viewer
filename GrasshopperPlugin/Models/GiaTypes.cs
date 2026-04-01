@@ -15,6 +15,8 @@ namespace GIAViewer.Models
     {
         public string MeshId { get; set; } = "mesh";
         public Rhino.Geometry.Mesh RhinoMesh { get; set; }
+        /// <summary>Optional convex hull (same units as main mesh). Viewer swaps to this beyond LOD distance.</summary>
+        public Rhino.Geometry.Mesh LodConvexHullMesh { get; set; }
         public GiaBimMaterial Material { get; set; }
     }
 

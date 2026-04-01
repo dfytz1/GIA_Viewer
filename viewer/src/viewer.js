@@ -9,6 +9,7 @@ import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { SSAOPass } from "three/examples/jsm/postprocessing/SSAOPass.js";
 import { mergeIdenticalMeshesToInstanced } from "./instancing.js";
+import { collectGiaLodPairs, updateGiaLodVisibility } from "./giaLod.js";
 
 const DRACO_DECODER =
   "https://www.gstatic.com/draco/versioned/decoders/1.5.6/";
@@ -58,6 +59,10 @@ export class GiaViewer {
     this._shadowInvMatrix = new THREE.Matrix4();
     this._shadowCornerScratch = new THREE.Vector3();
     this._orbitWasMoving = false;
+    /** @type {{ detail: import("three").Mesh; hull: import("three").Mesh; pivot: import("three").Object3D }[]} */
+    this._lodPairs = [];
+    /** World units: beyond this distance from LOD pivot, hull replaces detail. 0 = off. */
+    this.lodDistanceWorld = 0;
     this._shadowOrbitSuspended = false;
     this._shadowMetricScale = new THREE.Vector3();
     this._shadowSceneSize = new THREE.Vector3();
@@ -245,7 +250,7 @@ export class GiaViewer {
     const p = viewer.camera.position;
     const t = viewer.controls.target;
     let bg = viewer.getBackgroundColorHex().replace(/^#/, "");
-    return [
+    const entries = [
       ["bg", bg],
       ["cx", f(p.x)],
       ["cy", f(p.y)],
@@ -254,6 +259,9 @@ export class GiaViewer {
       ["ty", f(t.y)],
       ["tz", f(t.z)],
     ];
+    if (viewer.lodDistanceWorld > 0)
+      entries.push(["lodm", String(Number(viewer.lodDistanceWorld.toFixed(3)))]);
+    return entries;
   }
 
   /** Apply saved camera view (after model load so fit-to-model does not overwrite). */
@@ -365,6 +373,22 @@ export class GiaViewer {
   setSsao(enabled) {
     this.useSsao = !!enabled;
     this.ssaoPass.enabled = this.useSsao;
+    this._invalidateRender();
+  }
+
+  getLodDistanceWorld() {
+    return this.lodDistanceWorld;
+  }
+
+  /** @param {number} d World-space distance; 0 disables hull swap (full detail always). */
+  setLodDistanceWorld(d) {
+    const v = Number(d);
+    this.lodDistanceWorld = Number.isFinite(v) && v > 0 ? v : 0;
+    updateGiaLodVisibility(
+      this._lodPairs,
+      this.camera,
+      this.lodDistanceWorld,
+    );
     this._invalidateRender();
   }
 
@@ -545,6 +569,18 @@ export class GiaViewer {
       this._needsRender = true;
     }
     this._orbitWasMoving = moved;
+
+    if (
+      this._lodPairs.length > 0 &&
+      this.lodDistanceWorld > 0 &&
+      (moved || this._needsRender)
+    ) {
+      updateGiaLodVisibility(
+        this._lodPairs,
+        this.camera,
+        this.lodDistanceWorld,
+      );
+    }
 
     if (moved || this._needsRender) {
       if (this.useSsao && moved) {
@@ -1009,6 +1045,7 @@ export class GiaViewer {
   loadFromUrl(url) {
     return new Promise((resolve, reject) => {
       this._clearSelectionHighlight();
+      this._lodPairs = [];
       disposeBoundsTreesUnderRoot(this.modelRoot);
       this.modelRoot.traverse((o) => {
         if (o.userData?.giaCachedEdgesGeo) {
@@ -1041,6 +1078,12 @@ export class GiaViewer {
           this._tuneMeshShadowFlags();
           this._rebuildMeshMaterialCache();
           buildBoundsTreesForModelRoot(this.modelRoot);
+          this._lodPairs = collectGiaLodPairs(this.modelRoot);
+          updateGiaLodVisibility(
+            this._lodPairs,
+            this.camera,
+            this.lodDistanceWorld,
+          );
           this._tuneForHeavyScene(instStats);
           this._fitCameraToObject(this.modelRoot);
           this._applyClippingToModel();

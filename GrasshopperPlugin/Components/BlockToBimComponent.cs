@@ -48,6 +48,8 @@ namespace GIAViewer.Components
                 Params.Input[1].Optional = true;
             if (Params?.Input.Count > 3)
                 Params.Input[3].Optional = true;
+            if (Params?.Input.Count > 7)
+                Params.Input[7].Optional = true;
         }
 
         private static string ModelDefLabel(ModelInstanceDefinition mid)
@@ -121,6 +123,11 @@ namespace GIAViewer.Components
                 "Use range partitioner with parallel",
                 GH_ParamAccess.item,
                 false);
+            pManager.AddMeshParameter(
+                "ConvexHull",
+                "H",
+                "Optional LOD hull per definition branch: path {k} matches D branch k (one mesh per unique block).",
+                GH_ParamAccess.tree);
         }
 
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
@@ -162,6 +169,10 @@ namespace GIAViewer.Components
 
             var usePartitioner = false;
             da.GetData(6, ref usePartitioner);
+
+            IGH_Structure hullTreeStruct = null;
+            if (Params.Input.Count > 7 && Params.Input[7].VolatileData is IGH_Structure htree)
+                hullTreeStruct = htree;
 
             var brepOpts = BrepMeshingOptions.FromGrasshopper(ghMp, rhinoDoc, joinPerBrep);
 
@@ -302,10 +313,24 @@ namespace GIAViewer.Components
                     ? $"{slug}_{idToken}"
                     : $"{GiaMeshId.SanitizeForMeshId(idPrefix, "p")}_{slug}_{idToken}";
 
+                Mesh hullMesh = null;
+                if (hullTreeStruct != null)
+                {
+                    var hp = new GH_Path(k);
+                    if (hullTreeStruct.PathExists(hp))
+                    {
+                        var hb = hullTreeStruct.get_Branch(hp);
+                        if (hb != null && hb.Count > 0 && hb[0] is GH_Mesh ghm && ghm.IsValid && ghm.Value != null
+                            && ghm.Value.IsValid)
+                            hullMesh = ghm.Value.DuplicateMesh();
+                    }
+                }
+
                 var def = new GiaMeshDefinition
                 {
                     MeshId = meshId,
                     RhinoMesh = mesh.DuplicateMesh(),
+                    LodConvexHullMesh = hullMesh,
                     Material = mat,
                 };
                 defByName[nk] = def;

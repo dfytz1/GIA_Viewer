@@ -24,6 +24,8 @@ namespace GIAViewer.Components
             base.AddedToDocument(document);
             if (Params?.Input.Count > 1)
                 Params.Input[1].Optional = true;
+            if (Params?.Input.Count > 5)
+                Params.Input[5].Optional = true;
         }
 
         protected override void RegisterInputParams(GH_InputParamManager pManager)
@@ -42,6 +44,11 @@ namespace GIAViewer.Components
                 "");
             pManager.AddNumberParameter("PipeRadius", "R", "Radius when meshed as pipe", GH_ParamAccess.item, 0.05);
             pManager.AddIntegerParameter("Segments", "S", "Pipe / mesh density", GH_ParamAccess.item, 16);
+            pManager.AddMeshParameter(
+                "ConvexHull",
+                "H",
+                "Optional LOD convex hull mesh (same material as main mesh in viewer).",
+                GH_ParamAccess.item);
         }
 
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
@@ -73,6 +80,9 @@ namespace GIAViewer.Components
             var segments = 16;
             da.GetData(4, ref segments);
 
+            GH_Mesh ghHull = null;
+            da.GetData(5, ref ghHull);
+
             var mesh = CurveMesher.MeshFromCurve(crv, radius, segments);
             if (mesh == null || !mesh.IsValid)
             {
@@ -84,6 +94,9 @@ namespace GIAViewer.Components
             {
                 MeshId = id,
                 RhinoMesh = mesh,
+                LodConvexHullMesh = ghHull is { IsValid: true, Value: { IsValid: true } }
+                    ? ghHull.Value.DuplicateMesh()
+                    : null,
                 Material = mat,
             };
 

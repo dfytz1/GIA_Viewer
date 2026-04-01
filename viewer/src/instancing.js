@@ -47,6 +47,7 @@ export function mergeIdenticalMeshesToInstanced(root, options = {}) {
   root.traverse((o) => {
     if (!o.isMesh || o.isInstancedMesh) return;
     if (o.isSkinnedMesh) return;
+    if (o.name === "gia_detail" || o.name === "gia_hull") return;
     if (o.geometry?.morphAttributes && Object.keys(o.geometry.morphAttributes).length)
       return;
     if (Array.isArray(o.material)) return;

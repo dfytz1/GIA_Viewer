@@ -111,6 +111,7 @@ namespace GIAViewer.Helpers
             {
                 MeshId = meshId,
                 RhinoMesh = src.RhinoMesh.DuplicateMesh(),
+                LodConvexHullMesh = src.LodConvexHullMesh?.DuplicateMesh(),
                 Material = src.Material,
             };
         }

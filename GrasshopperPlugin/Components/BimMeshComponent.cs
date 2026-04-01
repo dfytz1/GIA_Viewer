@@ -37,7 +37,7 @@ namespace GIAViewer.Components
         public override void AddedToDocument(GH_Document document)
         {
             base.AddedToDocument(document);
-            foreach (var i in new[] { 0, 1, 3, 5, 6 })
+            foreach (var i in new[] { 0, 1, 3, 5, 6, 7 })
             {
                 if (Params?.Input.Count > i)
                     Params.Input[i].Optional = true;
@@ -85,6 +85,11 @@ namespace GIAViewer.Components
                 "Use range partitioner over branch indices with Par",
                 GH_ParamAccess.item,
                 false);
+            pManager.AddMeshParameter(
+                "ConvexHull",
+                "H",
+                "Optional LOD convex hull mesh per Geometry item (same tree paths & branch order as G).",
+                GH_ParamAccess.tree);
         }
 
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
@@ -121,6 +126,10 @@ namespace GIAViewer.Components
 
             var usePartitioner = false;
             da.GetData(6, ref usePartitioner);
+
+            IGH_Structure hullStructure = null;
+            if (Params.Input.Count > 7 && Params.Input[7].VolatileData is IGH_Structure hsHull)
+                hullStructure = hsHull;
 
             var doc = RhinoDoc.ActiveDoc;
             var brepOpts = BrepMeshingOptions.FromGrasshopper(ghMp, doc, joinPerBrep);
@@ -192,10 +201,20 @@ namespace GIAViewer.Components
                     if (rhMesh == null || !rhMesh.IsValid)
                         continue;
 
+                    Mesh hullDup = null;
+                    if (hullStructure != null && hullStructure.PathExists(path))
+                    {
+                        var hb = hullStructure.get_Branch(path);
+                        if (hb != null && j < hb.Count && hb[j] is GH_Mesh ghh && ghh.IsValid && ghh.Value != null
+                            && ghh.Value.IsValid)
+                            hullDup = ghh.Value.DuplicateMesh();
+                    }
+
                     var def = new GiaMeshDefinition
                     {
                         MeshId = id,
                         RhinoMesh = rhMesh,
+                        LodConvexHullMesh = hullDup,
                         Material = mat,
                     };
 

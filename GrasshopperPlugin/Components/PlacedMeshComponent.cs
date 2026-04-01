@@ -81,6 +81,7 @@ namespace GIAViewer.Components
             {
                 MeshId = id,
                 RhinoMesh = def.RhinoMesh.DuplicateMesh(),
+                LodConvexHullMesh = def.LodConvexHullMesh?.DuplicateMesh(),
                 Material = def.Material,
             };
             dupDef.RhinoMesh.Normals.ComputeNormals();
