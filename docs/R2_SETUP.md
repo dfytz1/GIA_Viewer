@@ -10,8 +10,7 @@
    [
      {
        "AllowedOrigins": [
-         "https://gia-viewer.vercel.app",
-         "https://viewer-dusky.vercel.app"
+         "https://gia-viewer.vercel.app"
        ],
        "AllowedMethods": ["GET", "HEAD", "PUT"],
        "AllowedHeaders": ["*"],
@@ -24,7 +23,7 @@
    - **GET** / **HEAD**: loading models in the browser (Three.js `fetch`).
    - **PUT**: optional but recommended so **presigned uploads** from a browser (if you add one later) work; Grasshopper’s `HttpClient` upload does not use CORS.
 
-   Add **every** viewer origin you use (no trailing slash). If you open a share link on `https://viewer-dusky.vercel.app` but CORS only allows `https://gia-viewer.vercel.app`, the console shows **Failed to fetch** and the model will not load.
+   Add **every** viewer origin you use (no trailing slash). Production is **`https://gia-viewer.vercel.app`** — deploy with `npm run deploy:production` from `viewer/` (see repo README), not `npx vercel` alone inside `viewer/`, or Vercel may create a separate project. If CORS omits the origin you open in the browser, the console shows **Failed to fetch** and the model will not load.
 
    For **Vercel preview** URLs (`*.vercel.app` with random names), either add another origin string, or temporarily use `"AllowedOrigins": ["*"]` while testing (looser).
 
