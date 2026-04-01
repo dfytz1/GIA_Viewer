@@ -42,6 +42,7 @@ export class GiaViewer {
       antialias: true,
       alpha: false,
       powerPreference: "high-performance",
+      logarithmicDepthBuffer: true,
     });
     this._targetPixelRatio = Math.min(window.devicePixelRatio, 2);
     this.renderer.setPixelRatio(this._targetPixelRatio);
@@ -86,7 +87,7 @@ export class GiaViewer {
     this.controls.minDistance = 0.1;
     this.controls.maxDistance = 1e6;
     this.controls.enableDblClickZoom = false;
-    // During orbit: sync `near` from view; keep `far` covering farthest bbox corner (may shrink, see _expandCameraFarIfNeeded).
+    // During orbit: sync `near` from view; keep `far` past farthest bbox corner with a scene-diagonal floor.
     this.controls.addEventListener("change", () => {
       this._syncCameraNearFromBounds();
       this._expandCameraFarIfNeeded();
@@ -626,8 +627,8 @@ export class GiaViewer {
   }
 
   /**
-   * OrbitControls `change`: set `far` from the farthest scene bbox corner from the camera (orbit target is irrelevant).
-   * Allows shrinking when zoomed in; 15% hysteresis avoids updating the projection matrix every frame.
+   * OrbitControls `change`: keep `far` beyond the farthest bbox corner from the camera, with a floor from
+   * full scene diagonal so `far` never drops below what separated groups need (avoids far clipping when orbiting).
    */
   _expandCameraFarIfNeeded() {
     if (this._bounds.isEmpty()) return;
@@ -649,9 +650,15 @@ export class GiaViewer {
     }
     maxDist = Math.max(maxDist, 1);
 
-    const needed = maxDist * 2.5;
-    if (Math.abs(needed - this.camera.far) / this.camera.far > 0.15) {
-      this.camera.far = Math.min(Math.max(needed, 500), 2e6);
+    const sx = max.x - min.x;
+    const sy = max.y - min.y;
+    const sz = max.z - min.z;
+    const modelDiag = Math.sqrt(sx * sx + sy * sy + sz * sz);
+
+    const needed = Math.max(maxDist * 2.75, modelDiag * 3, 500);
+    const newFar = Math.min(needed, 2e6);
+    if (Math.abs(newFar - this.camera.far) / this.camera.far > 0.02) {
+      this.camera.far = newFar;
       this.camera.updateProjectionMatrix();
     }
   }
@@ -1241,6 +1248,9 @@ export class GiaViewer {
             try {
               const instStats = await this._maybeMergeInstancing(root);
               this.modelRoot.updateMatrixWorld(true);
+              this.modelRoot.traverse((o) => {
+                if (o.isMesh || o.isInstancedMesh) o.frustumCulled = false;
+              });
               this._tuneMeshShadowFlags();
               this._rebuildMeshMaterialCache();
               buildBoundsTreesForModelRoot(this.modelRoot);
