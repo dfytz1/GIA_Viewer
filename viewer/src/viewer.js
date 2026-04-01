@@ -165,6 +165,25 @@ export class GiaViewer {
     this.grid.material.opacity = 0.35;
     this.grid.material.transparent = true;
     this.scene.add(this.grid);
+
+    const groundGeo = new THREE.PlaneGeometry(600, 600);
+    const groundMat = new THREE.MeshStandardMaterial({
+      color: 0xb8bec8,
+      metalness: 0,
+      roughness: 1,
+      side: THREE.DoubleSide,
+      polygonOffset: true,
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 1,
+    });
+    this.groundPlane = new THREE.Mesh(groundGeo, groundMat);
+    this.groundPlane.name = "GroundPlane";
+    this.groundPlane.rotation.x = -Math.PI / 2;
+    this.groundPlane.position.y = -0.02;
+    this.groundPlane.receiveShadow = true;
+    this.groundPlane.visible = false;
+    this.scene.add(this.groundPlane);
+
     this.setBackgroundColor("#e8eaf0");
 
     this.modelRoot = new THREE.Group();
@@ -297,6 +316,8 @@ export class GiaViewer {
       viewer.lodDetailMinPx >= 0
     )
       entries.push(["lodpx", String(Number(viewer.lodDetailMinPx.toFixed(1)))]);
+    if (viewer.getGroundPlaneVisible())
+      entries.push(["gp", "1"]);
     return entries;
   }
 
@@ -453,6 +474,16 @@ export class GiaViewer {
     this._invalidateRender();
   }
 
+  getGroundPlaneVisible() {
+    return !!this.groundPlane?.visible;
+  }
+
+  setGroundPlaneVisible(v) {
+    if (!this.groundPlane) return;
+    this.groundPlane.visible = !!v;
+    this._invalidateRender();
+  }
+
   getBackgroundColorHex() {
     const c = this.scene.background;
     return c && c.isColor ? `#${c.getHexString()}` : "#e8eaf0";
@@ -487,6 +518,11 @@ export class GiaViewer {
         mats[0]?.color?.setHex(0x8899aa);
         mats[1]?.color?.setHex(0xb8c4d0);
       }
+    }
+    const gm = this.groundPlane?.material;
+    if (gm && gm.color) {
+      if (dark) gm.color.setHex(0x1e2229);
+      else gm.color.setHex(0xb8bec8);
     }
     this._invalidateRender();
   }

@@ -19,6 +19,24 @@ const viewer = new Viewer({
 
 const gltfLoader = new GLTFLoaderPlugin(viewer);
 
+/**
+ * Grasshopper GlbExporter adds glTF nodes `gia_detail` (full mesh) and `gia_hull` (convex hull).
+ * The Three.js viewer toggles them with screen-space LOD (`giaLod.js`). GLTFLoaderPlugin has no equivalent:
+ * each named node becomes a visible entity, so hull and detail draw on top of each other unless we hide hulls.
+ * This matches the main viewer with LOD off: detail only.
+ */
+function hideGiaHullLodMeshes(sceneModel) {
+  const objects = sceneModel.objects;
+  if (!objects) return;
+  for (const id of Object.keys(objects)) {
+    if (typeof id !== "string") continue;
+    if (id === "gia_hull" || id.startsWith("gia_hull.")) {
+      const ent = objects[id];
+      if (ent) ent.visible = false;
+    }
+  }
+}
+
 function setLabel(text) {
   if (labelEl) labelEl.textContent = text;
 }
@@ -42,6 +60,7 @@ function loadFromUrl(url) {
   });
 
   model.on("loaded", () => {
+    hideGiaHullLodMeshes(model);
     try {
       const aabb = viewer.scene.getAABB();
       viewer.cameraFlight.flyTo({ aabb });
